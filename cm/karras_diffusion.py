@@ -77,7 +77,7 @@ class KarrasDenoiser:
         c_in = 1 / (sigma**2 + self.sigma_data**2) ** 0.5
         return c_skip, c_out, c_in
 
-    def training_losses(self, model, x_start, sigmas, model_kwargs=None, noise=None):
+    def training_losses(self, model, x_start, sigmas, augment_labels = None, model_kwargs=None, noise=None):
         if model_kwargs is None:
             model_kwargs = {}
         if noise is None:
@@ -87,7 +87,8 @@ class KarrasDenoiser:
 
         dims = x_start.ndim
         x_t = x_start + noise * append_dims(sigmas, dims)
-        model_output, denoised = self.denoise(model, x_t, sigmas, **model_kwargs)
+        # model_output, denoised = self.denoise(model, x_t, sigmas, **model_kwargs)
+        model_output, denoised = self.denoise(model, x_t, sigmas, augment_labels, **model_kwargs)
 
         snrs = self.get_snr(sigmas)
         weights = append_dims(
@@ -331,7 +332,8 @@ class KarrasDenoiser:
 
         return terms
 
-    def denoise(self, model, x_t, sigmas, **model_kwargs):
+    # def denoise(self, model, x_t, sigmas, **model_kwargs):
+    def denoise(self, model, x_t, sigmas, augment_labels = None, **model_kwargs):
         import torch.distributed as dist
 
         if not self.distillation:
@@ -344,7 +346,8 @@ class KarrasDenoiser:
                 for x in self.get_scalings_for_boundary_condition(sigmas)
             ]
         rescaled_t = 1000 * 0.25 * th.log(sigmas + 1e-44)
-        model_output = model(c_in * x_t, rescaled_t, **model_kwargs)
+        # model_output = model(c_in * x_t, rescaled_t, **model_kwargs)
+        model_output = model(c_in * x_t, rescaled_t, augment_labels, **model_kwargs)
         denoised = c_out * model_output + c_skip * x_t
         return model_output, denoised
 

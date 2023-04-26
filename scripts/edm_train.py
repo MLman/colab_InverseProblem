@@ -10,6 +10,7 @@ from cm.resample import create_named_schedule_sampler
 from cm.script_util import (
     model_and_diffusion_defaults,
     create_model_and_diffusion,
+    create_model_and_diffusion_sampler,
     args_to_dict,
     add_dict_to_argparser,
 )
@@ -24,7 +25,7 @@ def main():
     logger.configure()
 
     logger.log("creating model and diffusion...")
-    model, diffusion = create_model_and_diffusion(
+    model, diffusion, sampler = create_model_and_diffusion_sampler(
         **args_to_dict(args, model_and_diffusion_defaults().keys())
     )
     model.to(dist_util.dev())
@@ -53,6 +54,7 @@ def main():
     TrainLoop(
         model=model,
         diffusion=diffusion,
+        sampler=sampler,
         data=data,
         batch_size=batch_size,
         microbatch=args.microbatch,
@@ -60,18 +62,21 @@ def main():
         ema_rate=args.ema_rate,
         log_interval=args.log_interval,
         save_interval=args.save_interval,
+        test_interval=args.test_interval,
         resume_checkpoint=args.resume_checkpoint,
         use_fp16=args.use_fp16,
         fp16_scale_growth=args.fp16_scale_growth,
         schedule_sampler=schedule_sampler,
         weight_decay=args.weight_decay,
         lr_anneal_steps=args.lr_anneal_steps,
+        save_dir=args.save_dir,
     ).run_loop()
 
 
 def create_argparser():
     defaults = dict(
-        data_dir="",
+        data_dir="/hub_data2/sojin/Restormer_GoPro/train/input",
+        save_dir="/home/sojin/diffusion/consistency_models/tmp",
         schedule_sampler="uniform",
         lr=1e-4,
         weight_decay=0.0,
@@ -82,6 +87,7 @@ def create_argparser():
         ema_rate="0.9999",  # comma-separated list of EMA values
         log_interval=10,
         save_interval=10000,
+        test_interval=1000,
         resume_checkpoint="",
         use_fp16=False,
         fp16_scale_growth=1e-3,

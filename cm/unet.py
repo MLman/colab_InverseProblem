@@ -270,7 +270,8 @@ class AttentionBlock(nn.Module):
         num_heads=1,
         num_head_channels=-1,
         use_checkpoint=False,
-        attention_type="flash",
+        # attention_type="flash",
+        attention_type="default",
         encoder_channels=None,
         dims=2,
         channels_last=False,
@@ -554,6 +555,7 @@ class UNetModel(nn.Module):
         use_scale_shift_norm=False,
         resblock_updown=False,
         use_new_attention_order=False,
+        augment_dim=0,
     ):
         super().__init__()
 
@@ -585,6 +587,13 @@ class UNetModel(nn.Module):
 
         if self.num_classes is not None:
             self.label_emb = nn.Embedding(num_classes, time_embed_dim)
+
+
+        # Non-leaky augmentation
+        self.augment_dim = augment_dim
+        if self.augment_dim != 0:
+            self.map_augment = linear(in_features = self.augment_dim, out_features = time_embed_dim, bias = False)
+
 
         ch = input_ch = int(channel_mult[0] * model_channels)
         self.input_blocks = nn.ModuleList(
@@ -740,7 +749,7 @@ class UNetModel(nn.Module):
         self.middle_block.apply(convert_module_to_f32)
         self.output_blocks.apply(convert_module_to_f32)
 
-    def forward(self, x, timesteps, y=None):
+    def forward(self, x, timesteps, augment_labels = None, y=None):
         """
         Apply the model to an input batch.
 
@@ -759,6 +768,9 @@ class UNetModel(nn.Module):
         if self.num_classes is not None:
             assert y.shape == (x.shape[0],)
             emb = emb + self.label_emb(y)
+
+        if self.augment_dim != 0 and augment_labels is not None:
+            emb = emb + self.map_augment(augment_labels)
 
         h = x.type(self.dtype)
         for module in self.input_blocks:
