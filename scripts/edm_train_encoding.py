@@ -6,16 +6,15 @@ import argparse
 import os
 
 from cm import dist_util, logger
-from cm.image_datasets import load_data
+from cm.image_datasets_pairs import load_data_pairs
 from cm.resample import create_named_schedule_sampler
-from cm.script_util import (
+from cm.script_util_encoding import (
     model_and_diffusion_defaults,
-    create_model_and_diffusion,
-    create_model_and_diffusion_sampler,
+    create_model_and_diffusion_sampler, # karras_diffusion_encoding.py
     args_to_dict,
     add_dict_to_argparser,
 )
-from cm.train_util import TrainLoop
+from cm.train_util_pairs import TrainLoop
 import torch.distributed as dist
 
 def mkdir(path):
@@ -29,7 +28,7 @@ def main():
 
     mkdir(args.log_dir)
 
-    dist_util.setup_dist()
+    dist_util.setup_dist(args.gpu_num)
     logger.configure()
 
     logger.log("creating model and diffusion...")
@@ -49,7 +48,7 @@ def main():
     else:
         batch_size = args.batch_size
 
-    data = load_data(
+    data = load_data_pairs(
         data_dir=args.data_dir,
         batch_size=batch_size,
         image_size=args.image_size,
@@ -83,7 +82,7 @@ def main():
 
 def create_argparser():
     defaults = dict(
-        data_dir="/hub_data2/sojin/Restormer_GoPro/train/input",
+        data_dir="/hub_data2/sojin/Restormer_GoPro/train",
         schedule_sampler="uniform",
         lr=1e-4,
         weight_decay=0.0,
@@ -93,7 +92,7 @@ def create_argparser():
         microbatch=-1,  # -1 disables microbatches
         ema_rate="0.9999",  # comma-separated list of EMA values
         log_interval=10,
-        save_interval=10000,
+        save_interval=2500,
         test_interval=1000,
         resume_checkpoint="",
         use_fp16=False,
@@ -101,6 +100,7 @@ def create_argparser():
     )
     defaults.update(model_and_diffusion_defaults())
     parser = argparse.ArgumentParser()
+
     parser.add_argument('--gpu_num', type=str, default=None)
 
     parser.add_argument('--log_dir', type=str, default='/hub_data2/sojin/debugging')

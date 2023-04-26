@@ -18,13 +18,17 @@ GPUS_PER_NODE = 8
 SETUP_RETRY_COUNT = 3
 
 
-def setup_dist():
+def setup_dist(gpu_num=None):
     """
     Setup a distributed process group.
     """
     if dist.is_initialized():
         return
-    os.environ["CUDA_VISIBLE_DEVICES"] = f"{MPI.COMM_WORLD.Get_rank() % GPUS_PER_NODE}"
+    
+    if gpu_num is not None:
+        os.environ["CUDA_VISIBLE_DEVICES"] = gpu_num
+    else:
+        os.environ["CUDA_VISIBLE_DEVICES"] = f"{MPI.COMM_WORLD.Get_rank() % GPUS_PER_NODE}"
 
     comm = MPI.COMM_WORLD
     backend = "gloo" if not th.cuda.is_available() else "nccl"

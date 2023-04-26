@@ -9,14 +9,13 @@ import torch.distributed as dist
 from torch.nn.parallel.distributed import DistributedDataParallel as DDP
 from torch.optim import RAdam
 import torchvision.utils as vtils
-from accelerate import Accelerator
-from ema_pytorch import EMA
 
-from cm import dist_util, logger
+from . import dist_util, logger
 from .fp16_util import MixedPrecisionTrainer
 from .nn import update_ema
 from .resample import LossAwareSampler, UniformSampler
-from .karras_diffusion import karras_sample
+# from .karras_diffusion import karras_sample
+from .karras_diffusion_encoding import karras_sample
 
 from .fp16_util import (
     get_param_groups_and_shapes,
@@ -24,8 +23,6 @@ from .fp16_util import (
     master_params_to_model_params,
 )
 import numpy as np
-
-# from motionblur.motionblur import Kernel
 
 # For ImageNet experiments, this was a good default value.
 # We found that the lg_loss_scale quickly climbed to
@@ -54,20 +51,14 @@ class TrainLoop:
         schedule_sampler=None,
         weight_decay=0.0,
         lr_anneal_steps=0,
-        augmentpipe = None,
+        augmentpipe=None,
+        save_dir=None,
     ):
-        # Accelerator
-        self.accelerator = Accelerator(
-                split_batches = True,
-                mixed_precision = 'fp16' if use_fp16 else 'no'
-                )
-        self.accelerator.native_amp = True if use_fp16 else False
-        self.device = self.accelerator.device
-
         self.model = model
         self.diffusion = diffusion
         self.sampler = sampler
         self.data = data
+        self.save_dir = save_dir
         self.batch_size = batch_size
         self.microbatch = microbatch if microbatch > 0 else batch_size
         self.lr = lr
@@ -89,50 +80,52 @@ class TrainLoop:
 
         self.step = 0
         self.resume_step = 0
+        self.global_batch = self.batch_size * dist.get_world_size()
 
-        #self.global_batch = self.batch_size * dist.get_world_size()
-        #self.sync_cuda = th.cuda.is_available()
+        self.sync_cuda = th.cuda.is_available()
 
-        #self._load_and_sync_parameters()
-        #self.mp_trainer = MixedPrecisionTrainer(
-        #    model=self.model,
-        #    use_fp16=self.use_fp16,
-        #    fp16_scale_growth=fp16_scale_growth,
-        #)
+        self._load_and_sync_parameters()
+        self.mp_trainer = MixedPrecisionTrainer(
+            model=self.model,
+            use_fp16=self.use_fp16,
+            fp16_scale_growth=fp16_scale_growth,
+        )
 
-        #self.opt = RAdam(
-        #    self.mp_trainer.master_params, lr=self.lr, weight_decay=self.weight_decay
-        #)
-        
         self.opt = RAdam(
-                self.model.parameters(), lr = self.lr, weight_decay = self.weight_decay
+            self.mp_trainer.master_params, lr=self.lr, weight_decay=self.weight_decay
+        )
+        if self.resume_step:
+            self._load_optimizer_state()
+            # Model was resumed, either due to a restart or a checkpoint
+            # being specified at the command line.
+            self.ema_params = [
+                self._load_ema_parameters(rate) for rate in self.ema_rate
+            ]
+        else:
+            self.ema_params = [
+                copy.deepcopy(self.mp_trainer.master_params)
+                for _ in range(len(self.ema_rate))
+            ]
+
+        if th.cuda.is_available():
+            self.use_ddp = True
+            self.ddp_model = DDP(
+                self.model,
+                device_ids=[dist_util.dev()],
+                output_device=dist_util.dev(),
+                broadcast_buffers=False,
+                bucket_cap_mb=128,
+                find_unused_parameters=False,
+            )
+        else:
+            if dist.get_world_size() > 1:
+                logger.warn(
+                    "Distributed training requires CUDA. "
+                    "Gradients will not be synchronized properly!"
                 )
+            self.use_ddp = False
+            self.ddp_model = self.model
 
-        if self.accelerator.is_main_process:
-            self.ema_model = EMA(self.model, beta = 0.9999, update_every = 1)
-            #self.ema_model = self.accelerator.prepare(self.ema_model)
-            #self.ema_model = self.ema_model.to(self.device)
-
-        #if th.cuda.is_available():
-        #    self.use_ddp = True
-        #    self.ddp_model = DDP(
-        #        self.model,
-        #        device_ids=[dist_util.dev()],
-        #        output_device=dist_util.dev(),
-        #        broadcast_buffers=False,
-        #        bucket_cap_mb=128,
-        #        find_unused_parameters=False,
-        #    )
-        #else:
-        #    if dist.get_world_size() > 1:
-        #        logger.warn(
-        #            "Distributed training requires CUDA. "
-        #            "Gradients will not be synchronized properly!"
-        #        )
-        #    self.use_ddp = False
-        #    self.ddp_model = self.model
-
-        self.data, self.augmentpipe, self.model, self.opt, self.sampler = self.accelerator.prepare(self.data, self.augmentpipe, self.model, self.opt, self.sampler)
         self.step = self.resume_step
 
     def _load_and_sync_parameters(self):
@@ -180,12 +173,8 @@ class TrainLoop:
             self.opt.load_state_dict(state_dict)
 
     def run_loop(self):
-        if self.accelerator.is_main_process:
-            self.ema_model.to(self.device)
         while not self.lr_anneal_steps or self.step < self.lr_anneal_steps:
             batch, cond = next(self.data)
-            batch = batch.to(self.device)
-            cond = cond.to(self.device)
             self.run_step(batch, cond)
             if self.step % self.log_interval == 0:
                 logger.dumpkvs()
@@ -197,69 +186,71 @@ class TrainLoop:
             if (
                 self.step % self.test_interval == 0
                 and self.test_interval != -1
-                and self.accelerator.is_main_process
             ):
-                with self.accelerator.autocast():
-                    with th.no_grad():
-                        model_kwargs = {}
-                        img = self.sampler(
-                            diffusion = self.diffusion,
-                            model = self.ema_model,
-                            shape = batch.shape,
-                            steps = 120,
-                            model_kwargs = model_kwargs,
-                            device=self.device,
-                            sampler = 'heun',
-                        )
-                vtils.save_image(img, '/hub_data/dogyun/gopro_blur_edm/sample-{}.png'.format(self.step), normalize = True)
+                with th.no_grad():
+                    model_kwargs = {}
+                    img = self.sampler(
+                        diffusion = self.diffusion,
+                        model = self.ddp_model,
+                        shape = batch.shape,
+                        steps = 120,
+                        model_kwargs = model_kwargs,
+                        device=dist_util.dev(),
+                        sampler = 'heun',
+                    )
+                vtils.save_image(img, self.save_dir + '/sample-{}.png'.format(self.step), normalize = True)
                 
         # Save the last checkpoint if it wasn't already saved.
         if (self.step - 1) % self.save_interval != 0:
             self.save()
 
     def run_step(self, batch, cond):
-        with self.accelerator.autocast():
-            self.forward_backward(batch, cond)
-            self.accelerator.wait_for_everyone()
-            self.opt.step()
-            if self.step % 100 == 0:
-                logger.log("Current Step {}".format(self.step))
+        self.forward_backward(batch, cond)
+        took_step = self.mp_trainer.optimize(self.opt)
+        if took_step:
+            # if self.step % 100 == 0:
+            logger.log("Current Step {}".format(self.step))
             self.step += 1
-            self.accelerator.wait_for_everyone()
-            if self.accelerator.is_main_process:
-                self.ema_model.update()
-            self._anneal_lr()
-            self.log_step()
+            self._update_ema()
+        self._anneal_lr()
+        self.log_step()
 
     def forward_backward(self, batch, cond):
-        self.opt.zero_grad()
-        for i in range(0, batch.shape[0], self.microbatch):
-            micro = batch[i : i + self.microbatch]#.to(dist_util.dev())
-            #micro_cond = {
-            #    k: v[i : i + self.microbatch].to(dist_util.dev())
-            #    for k, v in cond.items()
-            #}
+        self.mp_trainer.zero_grad()
+        for i in range(0, batch[0].shape[0], self.microbatch): # batch[0]: sharp, batch[1]: blur
+            micro_sharp = batch[0][i : i + self.microbatch].to(dist_util.dev())
+            micro_blur = batch[1][i : i + self.microbatch].to(dist_util.dev())
             micro_cond = None # For our Case
 
             # Non-leaky augmentation
             if self.augmentpipe is not None:
-                micro, augment_labels = self.augmentpipe(micro)
+                micro_sharp, augment_labels = self.augmentpipe(micro_sharp)
+                micro_blur, _ = self.augmentpipe(micro_blur)
             else:
                 augment_labels = None
             
-            last_batch = (i + self.microbatch) >= batch.shape[0]
-            t, weights = self.schedule_sampler.sample(micro.shape[0], dist_util.dev())
+            last_batch = (i + self.microbatch) >= batch[0].shape[0]
 
+            t, weights = self.schedule_sampler.sample(micro_sharp.shape[0], dist_util.dev())
+
+            '''
+            For Implementation of Toy Algorithm,
+            Edit this loss Function
+            '''
             compute_losses = functools.partial(
-                self.diffusion.training_losses,
-                self.model,
-                micro,
+                self.diffusion.training_losses, # karras_diffusion_encoding.py
+                self.ddp_model,
+                [micro_sharp, micro_blur],
                 t,
-                augment_labels = augment_labels,
+                # augment_labels = augment_labels, # todo this 
                 model_kwargs=micro_cond,
             )
 
-            losses = compute_losses()
+            if last_batch or not self.use_ddp:
+                losses = compute_losses()
+            else:
+                with self.ddp_model.no_sync():
+                    losses = compute_losses()
 
             if isinstance(self.schedule_sampler, LossAwareSampler):
                 self.schedule_sampler.update_with_local_losses(
@@ -270,7 +261,7 @@ class TrainLoop:
             log_loss_dict(
                 self.diffusion, t, {k: v * weights for k, v in losses.items()}
             )
-            self.accelerator.backward(loss)
+            self.mp_trainer.backward(loss)
 
     def _update_ema(self):
         for rate, params in zip(self.ema_rate, self.ema_params):
@@ -288,44 +279,33 @@ class TrainLoop:
         logger.logkv("step", self.step + self.resume_step)
         logger.logkv("samples", (self.step + self.resume_step + 1) * self.global_batch)
 
-    #def save(self):
-    #    def save_checkpoint(rate, params):
-    #        state_dict = self.mp_trainer.master_params_to_state_dict(params)
-    #        if dist.get_rank() == 0:
-    #            logger.log(f"saving model {rate}...")
-    #            #if not rate:
-    #            #    filename = f"model{(self.step+self.resume_step):06d}.pt"
-    #            #else:
-    #            #    filename = f"ema_{rate}_{(self.step+self.resume_step):06d}.pt"
-    #            #with bf.BlobFile(bf.join(get_blob_logdir(), filename), "wb") as f:
-    #            th.save(state_dict, '/hub_data/dogyun/gopro_blur_edm/ckpt-{}-{}.pt'.format(self.step, rate))
-    #
-    #    for rate, params in zip(self.ema_rate, self.ema_params):
-    #        save_checkpoint(rate, params)
+    def save(self):
+        def save_checkpoint(rate, params):
+            state_dict = self.mp_trainer.master_params_to_state_dict(params)
+            if dist.get_rank() == 0:
+                logger.log(f"saving model {rate}...")
+                # if not rate:
+                    # filename = f"model{(self.step+self.resume_step):06d}.pt"
+                # else:
+                    # filename = f"ema_{rate}_{(self.step+self.resume_step):06d}.pt"
+                # with bf.BlobFile(bf.join(get_blob_logdir(), filename), "wb") as f:
+                    # th.save(state_dict, f)
+                th.save(state_dict, self.save_dir + '/ckpt-{}-{}.pt'.format(self.step, rate))
 
-        #if dist.get_rank() == 0:
-        #    with bf.BlobFile(
-        #        bf.join(get_blob_logdir(), f"opt{(self.step+self.resume_step):06d}.pt"),
-        #        "wb",
-        #    ) as f:
-        #        th.save(self.opt.state_dict(), f)
+        for rate, params in zip(self.ema_rate, self.ema_params):
+            save_checkpoint(rate, params)
+
+        # if dist.get_rank() == 0:
+        #     with bf.BlobFile(
+        #         bf.join(get_blob_logdir(), f"opt{(self.step+self.resume_step):06d}.pt"),
+        #         "wb",
+        #     ) as f:
+        #         th.save(self.opt.state_dict(), f)
 
         # Save model parameters last to prevent race conditions where a restart
         # loads model at step N, but opt/ema state isn't saved for step N.
-    #    save_checkpoint(0, self.mp_trainer.master_params)
-    #    dist.barrier()
-
-    def save(self):
-        if not self.accelerator.is_local_main_process:
-            return
-        data = {
-                'step' : self.step,
-                'model' : self.accelerator.get_state_dict(self.model),
-                'opt' : self.opt.state_dict(),
-                'ema_model' : self.ema_model.state_dict(),
-                'scaler' : self.accelerator.scaler.state_dict() if self.accelerator.scaler is not None else None,
-                }
-        th.save(data, '/hub_data/dogyun/gopro_blur_edm/ckpt-{}.pt'.format(self.step))
+        save_checkpoint(0, self.mp_trainer.master_params)
+        dist.barrier()
 
 
 class CMTrainLoop(TrainLoop):
@@ -426,11 +406,7 @@ class CMTrainLoop(TrainLoop):
             not self.lr_anneal_steps
             or self.step < self.lr_anneal_steps
             or self.global_step < self.total_training_steps
-        ):  
-            #kernel = Kernel(size=(64,64), intensity=1.0).kernelMatrix
-            #kernel = torch.from_numpy(kernel).type(torch.float32)
-            #kernel = kernel.to(dist_util.dev()).view(1, 1, 64, 64)
-
+        ):
             batch, cond = next(self.data)
             self.run_step(batch, cond)
             saved = False
@@ -446,6 +422,8 @@ class CMTrainLoop(TrainLoop):
                 if os.environ.get("DIFFUSION_TRAINING_TEST", "") and self.step > 0:
                     return
 
+            # if self.global_step % self.log_interval == 0:
+            #     logger.dumpkvs()
             if (
                 self.global_step % self.test_interval == 0
                 and self.test_interval != -1
@@ -463,10 +441,9 @@ class CMTrainLoop(TrainLoop):
                         device=dist_util.dev(),
                         sampler = 'onestep',
                     )
-                vtils.save_image(img, '/hub_data2/dogyun/consistency_test_fixed/sample-{}.png'.format(self.global_step), normalize = True)
+                vtils.save_image(img, self.save_dir + '/sample-{}.png'.format(self.global_step), normalize = True)
 
-            if self.global_step % self.log_interval == 0:
-                logger.dumpkvs()
+
 
         # Save the last checkpoint if it wasn't already saved.
         if not saved:
@@ -532,10 +509,10 @@ class CMTrainLoop(TrainLoop):
         self.mp_trainer.zero_grad()
         for i in range(0, batch.shape[0], self.microbatch):
             micro = batch[i : i + self.microbatch].to(dist_util.dev())
-            #micro_cond = {
-            #    k: v[i : i + self.microbatch].to(dist_util.dev())
-            #    for k, v in cond.items()
-            #}
+            # micro_cond = {
+            #     k: v[i : i + self.microbatch].to(dist_util.dev())
+            #     for k, v in cond.items()
+            # }
             micro_cond = None # For our case
             last_batch = (i + self.microbatch) >= batch.shape[0]
             t, weights = self.schedule_sampler.sample(micro.shape[0], dist_util.dev())
