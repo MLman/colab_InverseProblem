@@ -101,7 +101,7 @@ def create_model_and_diffusion(
     return model, diffusion
 
 
-def create_model_and_diffusion_sampler(
+def create_two_model_and_diffusion_sampler(
     image_size,
     class_cond,
     learn_sigma,
@@ -124,7 +124,26 @@ def create_model_and_diffusion_sampler(
     distillation=False,
     augment_dim=0,
 ):
-    model = create_model(
+    model_sharp = create_model(
+        image_size,
+        num_channels,
+        num_res_blocks,
+        channel_mult=channel_mult,
+        learn_sigma=learn_sigma,
+        class_cond=class_cond,
+        use_checkpoint=use_checkpoint,
+        attention_resolutions=attention_resolutions,
+        num_heads=num_heads,
+        num_head_channels=num_head_channels,
+        num_heads_upsample=num_heads_upsample,
+        use_scale_shift_norm=use_scale_shift_norm,
+        dropout=dropout,
+        resblock_updown=resblock_updown,
+        use_fp16=use_fp16,
+        use_new_attention_order=use_new_attention_order,
+        augment_dim=augment_dim,
+    )
+    model_blur = create_model(
         image_size,
         num_channels,
         num_res_blocks,
@@ -151,7 +170,7 @@ def create_model_and_diffusion_sampler(
         weight_schedule=weight_schedule,
     )
     sampler = karras_sample
-    return model, diffusion, sampler
+    return model_sharp, model_blur, diffusion, sampler
 
 def create_model(
     image_size,

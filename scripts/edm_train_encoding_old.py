@@ -10,11 +10,11 @@ from cm.image_datasets_pairs import load_data_pairs
 from cm.resample import create_named_schedule_sampler
 from cm.script_util_encoding import (
     model_and_diffusion_defaults,
-    create_model_and_diffusion_sampler, # karras_diffusion_encoding.py
+    create_two_model_and_diffusion_sampler, # karras_diffusion_encoding.py
     args_to_dict,
     add_dict_to_argparser,
 )
-from cm.train_util_pairs import TrainLoop
+from consistency_models.cm.train_util_pairs_old import TrainLoop
 import torch.distributed as dist
 
 def mkdir(path):
@@ -32,10 +32,11 @@ def main():
     logger.configure()
 
     logger.log("creating model and diffusion...")
-    model, diffusion, sampler = create_model_and_diffusion_sampler(
+    model_sharp, model_blur, diffusion, sampler = create_two_model_and_diffusion_sampler(
         **args_to_dict(args, model_and_diffusion_defaults().keys())
     )
-    model.to(dist_util.dev())
+    model_sharp.to(dist_util.dev())
+    model_blur.to(dist_util.dev())
     schedule_sampler = create_named_schedule_sampler(args.schedule_sampler, diffusion)
 
     logger.log("creating data loader...")
@@ -59,7 +60,9 @@ def main():
 
     logger.log("training...")
     TrainLoop(
-        model=model,
+        model_sharp=model_sharp,
+        model_blur=model_blur,
+        sharp_ckpt=args.sharp_ckpt,
         diffusion=diffusion,
         sampler=sampler,
         data=data,
@@ -83,6 +86,7 @@ def main():
 def create_argparser():
     defaults = dict(
         data_dir="/hub_data2/sojin/Restormer_GoPro/train",
+        sharp_ckpt="/home/sojin/diffusion/ckpt-60000-0.9999pt",
         schedule_sampler="uniform",
         lr=1e-4,
         weight_decay=0.0,
@@ -105,6 +109,7 @@ def create_argparser():
 
     parser.add_argument('--log_dir', type=str, default='/hub_data2/sojin/debugging')
     parser.add_argument('-log','--log_suffix', type=str, required=True) # Experiment name, starts with tb(tesorboard) ->  tb_exp1
+
 
     add_dict_to_argparser(parser, defaults)
     return parser

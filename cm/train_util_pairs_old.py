@@ -14,6 +14,7 @@ from . import dist_util, logger
 from .fp16_util import MixedPrecisionTrainer
 from .nn import update_ema
 from .resample import LossAwareSampler, UniformSampler
+# from .karras_diffusion import karras_sample
 from .karras_diffusion_encoding import karras_sample
 
 from .fp16_util import (
@@ -33,7 +34,8 @@ class TrainLoop:
     def __init__(
         self,
         *,
-        model,
+        sharp_model,
+        blur_model,
         diffusion,
         sampler,
         data,
@@ -52,8 +54,10 @@ class TrainLoop:
         lr_anneal_steps=0,
         augmentpipe=None,
         save_dir=None,
+        sharp_ckpt=None,
     ):
-        self.model = model
+        self.sharp_model = sharp_model
+        self.blur_model = blur_model
         self.diffusion = diffusion
         self.sampler = sampler
         self.data = data
@@ -83,9 +87,27 @@ class TrainLoop:
 
         self.sync_cuda = th.cuda.is_available()
 
-        self._load_and_sync_parameters()
+        # Loading pretrained Sharp model
+        self.pretrained_sharp_ckpt = sharp_ckpt
+        self._load_and_sync_sharpmodel_parameters()
+        self.sharp_model.requires_grad_(False)
+        self.sharp_model.eval()
+
+        # Set for Blur model
+        self._load_and_sync_blur_parameters()
+        self.blur_model.requires_grad_(False)
+        self.blur_model.train()
+
+        # MixedPrecisionTrainer: Do the same things below this comment
+        # self.blur_model_param_groups_and_shapes = get_param_groups_and_shapes(
+        #     self.blur_model.named_parameters()
+        # )
+        # self.blur_model_master_params = make_master_params(
+        #     self.blur_model_param_groups_and_shapes
+        # )
+
         self.mp_trainer = MixedPrecisionTrainer(
-            model=self.model,
+            model=self.blur_model,
             use_fp16=self.use_fp16,
             fp16_scale_growth=fp16_scale_growth,
         )
@@ -106,10 +128,19 @@ class TrainLoop:
                 for _ in range(len(self.ema_rate))
             ]
 
+######## Check ########
         if th.cuda.is_available():
             self.use_ddp = True
-            self.ddp_model = DDP(
-                self.model,
+            # self.ddp_sharp_model = DDP(
+            #     self.sharp_model,
+            #     device_ids=[dist_util.dev()],
+            #     output_device=dist_util.dev(),
+            #     broadcast_buffers=False,
+            #     bucket_cap_mb=128,
+            #     find_unused_parameters=False,
+            # )
+            self.ddp_blur_model = DDP(
+                self.blur_model,
                 device_ids=[dist_util.dev()],
                 output_device=dist_util.dev(),
                 broadcast_buffers=False,
@@ -123,25 +154,43 @@ class TrainLoop:
                     "Gradients will not be synchronized properly!"
                 )
             self.use_ddp = False
-            self.ddp_model = self.model
+            # self.ddp_sharp_model = self.sharp_model
+            self.ddp_blur_model = self.blur_model
 
         self.step = self.resume_step
+######## Check ########
 
-    def _load_and_sync_parameters(self):
-        resume_checkpoint = find_resume_checkpoint() or self.resume_checkpoint
+    def _load_and_sync_sharpmodel_parameters(self):
+        resume_checkpoint = self.pretrained_sharp_ckpt
 
         if resume_checkpoint:
-            self.resume_step = parse_resume_step_from_filename(resume_checkpoint)
-            if dist.get_rank() == 0:
-                logger.log(f"loading model from checkpoint: {resume_checkpoint}...")
-                self.model.load_state_dict(
+            if bf.exists(resume_checkpoint) and dist.get_rank() == 0:
+                logger.log(f"loading Sharp Teacher model from checkpoint: {resume_checkpoint}...")
+                self.sharp_model.load_state_dict(
                     dist_util.load_state_dict(
                         resume_checkpoint, map_location=dist_util.dev()
                     ),
                 )
 
-        dist_util.sync_params(self.model.parameters())
-        dist_util.sync_params(self.model.buffers())
+        dist_util.sync_params(self.sharp_model.parameters())
+        dist_util.sync_params(self.sharp_model.buffers())
+
+    def _load_and_sync_blur_parameters(self):
+        resume_checkpoint = find_resume_checkpoint() or self.resume_checkpoint
+
+        if resume_checkpoint:
+            if bf.exists(resume_checkpoint) and dist.get_rank() == 0:
+                logger.log(
+                    "loading Blur model from checkpoint: {resume_checkpoint}..."
+                )
+                self.blur_model.load_state_dict(
+                    dist_util.load_state_dict(
+                        resume_checkpoint, map_location=dist_util.dev()
+                    ),
+                )
+
+        dist_util.sync_params(self.blur_model.parameters())
+        dist_util.sync_params(self.blur_model.buffers())
 
     def _load_ema_parameters(self, rate):
         ema_params = copy.deepcopy(self.mp_trainer.master_params)
@@ -190,14 +239,14 @@ class TrainLoop:
                     model_kwargs = {}
                     img = self.sampler(
                         diffusion = self.diffusion,
-                        model = self.ddp_model,
+                        model = self.ddp_blur_model,
                         shape = batch.shape,
                         steps = 120,
                         model_kwargs = model_kwargs,
                         device=dist_util.dev(),
                         sampler = 'heun',
                     )
-                vtils.save_image(img, self.save_dir + '/sample-{}.png'.format(self.step), normalize = True)
+                vtils.save_image(img, self.save_dir + '/blurmodel_sample-{}.png'.format(self.step), normalize = True)
                 
         # Save the last checkpoint if it wasn't already saved.
         if (self.step - 1) % self.save_interval != 0:
@@ -238,7 +287,7 @@ class TrainLoop:
             '''
             compute_losses = functools.partial(
                 self.diffusion.training_losses, # karras_diffusion_encoding.py
-                self.ddp_model,
+                [self.ddp_sharp_model, self.ddp_blur_model]
                 [micro_sharp, micro_blur],
                 t,
                 # augment_labels = augment_labels, # todo this 
@@ -248,7 +297,7 @@ class TrainLoop:
             if last_batch or not self.use_ddp:
                 losses = compute_losses()
             else:
-                with self.ddp_model.no_sync():
+                with self.ddp_blur_model.no_sync():
                     losses = compute_losses()
 
             if isinstance(self.schedule_sampler, LossAwareSampler):
@@ -345,7 +394,7 @@ class CMTrainLoop(TrainLoop):
             self.teacher_model.eval()
 
         self.global_step = self.step
-        if training_mode == "progdist":
+        if training_mode == "progdist": # progressive distillation
             self.target_model.eval()
             _, scale = ema_scale_fn(self.global_step)
             if scale == 1 or scale == 2:
@@ -485,7 +534,7 @@ class CMTrainLoop(TrainLoop):
                 with th.no_grad():
                     update_ema(
                         self.teacher_model.parameters(),
-                        self.model.parameters(),
+                        self.blur_model.parameters(),
                         0.0,
                     )
                 # reset optimizer
