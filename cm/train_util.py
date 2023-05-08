@@ -207,8 +207,8 @@ class TrainLoop:
         self.forward_backward(batch, cond)
         took_step = self.mp_trainer.optimize(self.opt)
         if took_step:
-            # if self.step % 100 == 0:
-            logger.log("Current Step {}".format(self.step))
+            if self.step % 100 == 0:
+                logger.log("Current Step {}".format(self.step))
             self.step += 1
             self._update_ema()
         self._anneal_lr()

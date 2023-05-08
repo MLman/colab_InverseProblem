@@ -14,7 +14,7 @@ from cm.script_util_encoding import (
     args_to_dict,
     add_dict_to_argparser,
 )
-from consistency_models.cm.train_util_pairs_old import TrainLoop
+from cm.train_util_pairs_old import TrainLoop
 import torch.distributed as dist
 
 def mkdir(path):

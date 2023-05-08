@@ -72,6 +72,7 @@ def create_model_and_diffusion(
     sigma_min=0.002,
     sigma_max=80.0,
     distillation=False,
+    augment_dim=0,
 ):
     model = create_model(
         image_size,
@@ -90,6 +91,7 @@ def create_model_and_diffusion(
         resblock_updown=resblock_updown,
         use_fp16=use_fp16,
         use_new_attention_order=use_new_attention_order,
+        augment_dim=augment_dim,
     )
     diffusion = KarrasDenoiser(
         sigma_data=0.5,
@@ -176,7 +178,6 @@ def create_model(
         if image_size == 512:
             channel_mult = (0.5, 1, 1, 2, 2, 4, 4)
         elif image_size == 256:
-            # channel_mult = (1, 1, 2, 2, 4, 4)
             channel_mult = (1, 1, 2, 2, 3, 3)
         elif image_size == 128:
             channel_mult = (1, 1, 2, 3, 4)
