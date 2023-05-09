@@ -61,6 +61,11 @@ def main():
     model.load_state_dict(
         dist_util.load_state_dict(args.model_path, map_location="cpu")
     )
+
+    ### Check loaded parameters ###
+    # for param in model.parameters(): 
+        # print(param)
+
     model.to(dist_util.dev())
     if args.use_fp16:
         model.convert_to_fp16()
@@ -169,7 +174,7 @@ def create_argparser():
     parser = argparse.ArgumentParser()
     parser.add_argument('--gpu_num', type=str, default=None)
 
-    parser.add_argument('--log_dir', type=str, default='/hub_data2/sojin/sampling_results/gopro_clean_edm_230508_kakaoenter_expcheck')
+    parser.add_argument('--log_dir', type=str, default='/hub_data2/sojin/sampling_results/gopro_encoding_0509')
     parser.add_argument('-log','--log_suffix', type=str, required=True) # Experiment name, starts with tb(tesorboard) ->  tb_exp1
 
     add_dict_to_argparser(parser, defaults)
