@@ -77,17 +77,27 @@ class KarrasDenoiser:
         c_in = 1 / (sigma**2 + self.sigma_data**2) ** 0.5
         return c_skip, c_out, c_in
 
-    def training_losses(self, model, x_start, sigmas, augment_labels = None, model_kwargs=None, noise=None):
+    '''
+    For Implementation of Toy Algorithm,
+    Edit this Function, training_losses
+    '''
+    # x_start: [sharp, blur]
+    def training_losses(self, model, x_start, sigmas, augment_labels=None, model_kwargs=None, noise=None):
         if model_kwargs is None:
             model_kwargs = {}
         if noise is None:
-            noise = th.randn_like(x_start)
+            noise = th.randn_like(x_start[0])
 
         terms = {}
 
-        dims = x_start.ndim
-        x_t = x_start + noise * append_dims(sigmas, dims)
-        # model_output, denoised = self.denoise(model, x_t, sigmas, **model_kwargs)
+        dims = x_start[0].ndim
+        x_sharp_start, x_blur_start = x_start[0], x_start[1]
+        import pdb; pdb.set_trace()
+
+        # x_t = x_start + noise * append_dims(sigmas, dims)
+        x_shart_t = x_sharp_start + noise * append_dims(sigmas, dims)
+        x_blur_t = x_blur_start + noise * append_dims(sigmas, dims)
+
         model_output, denoised = self.denoise(model, x_t, sigmas, augment_labels, **model_kwargs)
 
         snrs = self.get_snr(sigmas)

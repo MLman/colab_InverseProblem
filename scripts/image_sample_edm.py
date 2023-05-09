@@ -36,7 +36,7 @@ def main():
     save_dir = args.log_dir
 
     dist_util.setup_dist(args.gpu_num)
-    logger.configure()
+    logger.configure(dir=args.log_dir)
 
     if "consistency" in args.training_mode:
         distillation = True
@@ -152,24 +152,24 @@ def create_argparser():
         generator="determ",
         clip_denoised=True,
         num_samples=10000,
-        batch_size=16,
+        batch_size=1,
         sampler="heun",
         s_churn=0.0,
         s_tmin=0.0,
         s_tmax=float("inf"),
         s_noise=1.0,
-        steps=1000,
-        model_path="./ckpt-90000-0.9999.pt",
+        steps=120,
+        model_path="/home/sojin/diffusion/ckpt-53000-0.9999.pt",
         seed=42,
         ts="",
-        augment=True,
-        augment_dim=256,
+        augment=False,
+        augment_dim=0,
     )
     defaults.update(model_and_diffusion_defaults())
     parser = argparse.ArgumentParser()
     parser.add_argument('--gpu_num', type=str, default=None)
 
-    parser.add_argument('--log_dir', type=str, default='/hub_data2/sojin/sampling_results/gopro_clean_edm_230508')
+    parser.add_argument('--log_dir', type=str, default='/hub_data2/sojin/sampling_results/gopro_clean_edm_230508_kakaoenter_expcheck')
     parser.add_argument('-log','--log_suffix', type=str, required=True) # Experiment name, starts with tb(tesorboard) ->  tb_exp1
 
     add_dict_to_argparser(parser, defaults)

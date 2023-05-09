@@ -37,6 +37,8 @@ def setup_dist(gpu_num=None):
         hostname = "localhost"
     else:
         hostname = socket.gethostbyname(socket.getfqdn())
+        # hostname = "localhost"
+
     os.environ["MASTER_ADDR"] = comm.bcast(hostname, root=0)
     os.environ["RANK"] = str(comm.rank)
     os.environ["WORLD_SIZE"] = str(comm.size)
@@ -44,6 +46,7 @@ def setup_dist(gpu_num=None):
     port = comm.bcast(_find_free_port(), root=0)
     os.environ["MASTER_PORT"] = str(port)
     dist.init_process_group(backend=backend, init_method="env://")
+    # dist.init_process_group(backend=backend)
 
 
 def dev():
@@ -85,6 +88,7 @@ def sync_params(params):
     for p in params:
         with th.no_grad():
             dist.broadcast(p, 0)
+            # dist.broadcast(p.detach(), 0)
 
 
 def _find_free_port():

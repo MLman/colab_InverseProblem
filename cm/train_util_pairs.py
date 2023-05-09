@@ -207,8 +207,8 @@ class TrainLoop:
         self.forward_backward(batch, cond)
         took_step = self.mp_trainer.optimize(self.opt)
         if took_step:
-            # if self.step % 100 == 0:
-            logger.log("Current Step {}".format(self.step))
+            if self.step % 100 == 0:
+                logger.log("Current Step {}".format(self.step))
             self.step += 1
             self._update_ema()
         self._anneal_lr()
@@ -216,7 +216,9 @@ class TrainLoop:
 
     def forward_backward(self, batch, cond):
         self.mp_trainer.zero_grad()
-        for i in range(0, batch[0].shape[0], self.microbatch): # batch[0]: sharp, batch[1]: blur
+
+        # batch[0]: sharp, batch[1]: blur
+        for i in range(0, batch[0].shape[0], self.microbatch):
             micro_sharp = batch[0][i : i + self.microbatch].to(dist_util.dev())
             micro_blur = batch[1][i : i + self.microbatch].to(dist_util.dev())
             micro_cond = None # For our Case
@@ -229,7 +231,6 @@ class TrainLoop:
                 augment_labels = None
             
             last_batch = (i + self.microbatch) >= batch[0].shape[0]
-
             t, weights = self.schedule_sampler.sample(micro_sharp.shape[0], dist_util.dev())
 
             '''
@@ -283,13 +284,14 @@ class TrainLoop:
             state_dict = self.mp_trainer.master_params_to_state_dict(params)
             if dist.get_rank() == 0:
                 logger.log(f"saving model {rate}...")
-                # if not rate:
-                    # filename = f"model{(self.step+self.resume_step):06d}.pt"
-                # else:
-                    # filename = f"ema_{rate}_{(self.step+self.resume_step):06d}.pt"
+                if not rate:
+                    filename = f"model{(self.step+self.resume_step):06d}.pt"
+                else:
+                    filename = f"ema_{rate}_{(self.step+self.resume_step):06d}.pt"
                 # with bf.BlobFile(bf.join(get_blob_logdir(), filename), "wb") as f:
                     # th.save(state_dict, f)
-                th.save(state_dict, self.save_dir + '/ckpt-{}-{}.pt'.format(self.step, rate))
+                # th.save(state_dict, self.save_dir + '/ckpt-{}-{}.pt'.format(self.step, rate))
+                th.save(state_dict, self.save_dir + f'/{filename}')
 
         for rate, params in zip(self.ema_rate, self.ema_params):
             save_checkpoint(rate, params)
@@ -440,8 +442,33 @@ class CMTrainLoop(TrainLoop):
                         device=dist_util.dev(),
                         sampler = 'onestep',
                     )
-                vtils.save_image(img, self.save_dir + '/sample-{}.png'.format(self.global_step), normalize = True)
+                vtils.save_image(img, self.save_dir + '/onestep_40steps_sample-{}.png'.format(self.global_step), normalize=True)
+                
+                with th.no_grad():
+                    model_kwargs = {}
+                    img = self.sampler(
+                        diffusion = self.diffusion,
+                        model = self.target_model,
+                        shape = batch.shape,
+                        steps = 40,
+                        model_kwargs = model_kwargs,
+                        device=dist_util.dev(),
+                        sampler = 'heun',
+                    )
+                vtils.save_image(img, self.save_dir + '/heun_40steps_sample-{}.png'.format(self.global_step), normalize=True)
 
+                with th.no_grad():
+                    model_kwargs = {}
+                    img = self.sampler(
+                        diffusion = self.diffusion,
+                        model = self.target_model,
+                        shape = batch.shape,
+                        steps = 120,
+                        model_kwargs = model_kwargs,
+                        device=dist_util.dev(),
+                        sampler = 'heun',
+                    )
+                vtils.save_image(img, self.save_dir + '/heun_120steps_sample-{}.png'.format(self.global_step), normalize=True)
 
 
         # Save the last checkpoint if it wasn't already saved.
@@ -457,6 +484,8 @@ class CMTrainLoop(TrainLoop):
                 self._update_target_ema()
             if self.training_mode == "progdist":
                 self.reset_training_for_progdist()
+            if self.step % 100 == 0:
+                logger.log("Current Step {}".format(self.step))
             self.step += 1
             self.global_step += 1
 
@@ -506,15 +535,16 @@ class CMTrainLoop(TrainLoop):
 
     def forward_backward(self, batch, cond):
         self.mp_trainer.zero_grad()
-        for i in range(0, batch.shape[0], self.microbatch):
-            micro = batch[i : i + self.microbatch].to(dist_util.dev())
-            # micro_cond = {
-            #     k: v[i : i + self.microbatch].to(dist_util.dev())
-            #     for k, v in cond.items()
-            # }
-            micro_cond = None # For our case
-            last_batch = (i + self.microbatch) >= batch.shape[0]
-            t, weights = self.schedule_sampler.sample(micro.shape[0], dist_util.dev())
+
+        # batch[0]: sharp, batch[1]: blur
+        for i in range(0, batch[0].shape[0], self.microbatch):
+            micro_sharp = batch[0][i : i + self.microbatch].to(dist_util.dev())
+            micro_blur = batch[1][i : i + self.microbatch].to(dist_util.dev())
+            micro_cond = None # For our Case
+            import pdb; pdb.set_trace()
+            
+            last_batch = (i + self.microbatch) >= batch[0].shape[0]
+            t, weights = self.schedule_sampler.sample(micro_sharp.shape[0], dist_util.dev())
 
             ema, num_scales = self.ema_scale_fn(self.global_step)
             if self.training_mode == "progdist":
@@ -522,7 +552,7 @@ class CMTrainLoop(TrainLoop):
                     compute_losses = functools.partial(
                         self.diffusion.progdist_losses,
                         self.ddp_model,
-                        micro,
+                        [micro_sharp, micro_blur],
                         num_scales,
                         target_model=self.teacher_model,
                         target_diffusion=self.teacher_diffusion,
@@ -532,7 +562,7 @@ class CMTrainLoop(TrainLoop):
                     compute_losses = functools.partial(
                         self.diffusion.progdist_losses,
                         self.ddp_model,
-                        micro,
+                        [micro_sharp, micro_blur],
                         num_scales,
                         target_model=self.target_model,
                         target_diffusion=self.diffusion,
@@ -542,7 +572,7 @@ class CMTrainLoop(TrainLoop):
                 compute_losses = functools.partial(
                     self.diffusion.consistency_losses,
                     self.ddp_model,
-                    micro,
+                    [micro_sharp, micro_blur],
                     num_scales,
                     target_model=self.target_model,
                     teacher_model=self.teacher_model,
@@ -553,7 +583,7 @@ class CMTrainLoop(TrainLoop):
                 compute_losses = functools.partial(
                     self.diffusion.consistency_losses,
                     self.ddp_model,
-                    micro,
+                    [micro_sharp, micro_blur],
                     num_scales,
                     target_model=self.target_model,
                     model_kwargs=micro_cond,
@@ -580,8 +610,6 @@ class CMTrainLoop(TrainLoop):
             self.mp_trainer.backward(loss)
 
     def save(self):
-        import blobfile as bf
-
         step = self.global_step
 
         def save_checkpoint(rate, params):
@@ -592,31 +620,35 @@ class CMTrainLoop(TrainLoop):
                     filename = f"model{step:06d}.pt"
                 else:
                     filename = f"ema_{rate}_{step:06d}.pt"
-                with bf.BlobFile(bf.join(get_blob_logdir(), filename), "wb") as f:
-                    th.save(state_dict, f)
+                # with bf.BlobFile(bf.join(get_blob_logdir(), filename), "wb") as f:
+                #     th.save(state_dict, f)
+                th.save(state_dict, self.save_dir + f'/{filename}')
 
         for rate, params in zip(self.ema_rate, self.ema_params):
             save_checkpoint(rate, params)
 
-        logger.log("saving optimizer state...")
-        if dist.get_rank() == 0:
-            with bf.BlobFile(
-                bf.join(get_blob_logdir(), f"opt{step:06d}.pt"),
-                "wb",
-            ) as f:
-                th.save(self.opt.state_dict(), f)
+        # logger.log("saving optimizer state...")
+        # if dist.get_rank() == 0:
+        #     with bf.BlobFile(
+        #         bf.join(get_blob_logdir(), f"opt{step:06d}.pt"),
+        #         "wb",
+        #     ) as f:
+        #         th.save(self.opt.state_dict(), f)
 
         if dist.get_rank() == 0:
             if self.target_model:
                 logger.log("saving target model state")
                 filename = f"target_model{step:06d}.pt"
-                with bf.BlobFile(bf.join(get_blob_logdir(), filename), "wb") as f:
-                    th.save(self.target_model.state_dict(), f)
+                # with bf.BlobFile(bf.join(get_blob_logdir(), filename), "wb") as f:
+                    # th.save(self.target_model.state_dict(), f)
+                th.save(self.target_model.state_dict(), self.save_dir + f'/{filename}')
+                
             if self.teacher_model and self.training_mode == "progdist":
                 logger.log("saving teacher model state")
                 filename = f"teacher_model{step:06d}.pt"
-                with bf.BlobFile(bf.join(get_blob_logdir(), filename), "wb") as f:
-                    th.save(self.teacher_model.state_dict(), f)
+                # with bf.BlobFile(bf.join(get_blob_logdir(), filename), "wb") as f:
+                    # th.save(self.teacher_model.state_dict(), f)
+                th.save(self.teacher_model.state_dict(), self.save_dir + f'/{filename}')
 
         # Save model parameters last to prevent race conditions where a restart
         # loads model at step N, but opt/ema state isn't saved for step N.
