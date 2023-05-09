@@ -146,7 +146,7 @@ class TrainLoop:
                 logger.log(f"loading model from checkpoint: {resume_checkpoint}...")
                 self.model.load_state_dict(
                     dist_util.load_state_dict(
-                        resume_checkpoint, map_location=dist_util.dev()
+                        resume_checkpoint, map_location=dist_util.dev(),
                     ),
                 )
 

@@ -177,6 +177,7 @@ def main():
 
     target_model.to(dist_util.dev())
     target_model.train()
+    import pdb; pdb.set_trace()
 
     dist_util.sync_params(target_model.parameters())
     dist_util.sync_params(target_model.buffers())
