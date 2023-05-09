@@ -8,6 +8,9 @@ import torch
 import torchvision.datasets as dsets
 import torchvision.transforms as transforms
 
+import sys
+sys.path.append(os.path.dirname(os.path.abspath(os.path.dirname(__file__))))
+
 from cm import dist_util, logger
 from cm.image_datasets import load_data
 from cm.resample import create_named_schedule_sampler
@@ -40,7 +43,7 @@ def main():
     mkdir(args.log_dir)
 
     dist_util.setup_dist(args.gpu_num)
-    logger.configure()
+    logger.configure(dir=args.log_dir, format_strs=['stdout','log','csv','tensorboard'], log_suffix=args.log_suffix)
 
     # Check for configuration
     if not args.augment:

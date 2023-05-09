@@ -54,6 +54,7 @@ class TrainLoop:
         schedule_sampler=None,
         weight_decay=0.0,
         lr_anneal_steps=0,
+        save_dir=None,
         augmentpipe = None,
     ):
         # Accelerator
@@ -68,6 +69,7 @@ class TrainLoop:
         self.diffusion = diffusion
         self.sampler = sampler
         self.data = data
+        self.save_dir = save_dir
         self.batch_size = batch_size
         self.microbatch = microbatch if microbatch > 0 else batch_size
         self.lr = lr
@@ -90,10 +92,10 @@ class TrainLoop:
         self.step = 0
         self.resume_step = 0
 
-        #self.global_batch = self.batch_size * dist.get_world_size()
+        self.global_batch = self.batch_size 
         #self.sync_cuda = th.cuda.is_available()
 
-        #self._load_and_sync_parameters()
+        # self._load_and_sync_parameters()
         #self.mp_trainer = MixedPrecisionTrainer(
         #    model=self.model,
         #    use_fp16=self.use_fp16,
@@ -144,7 +146,7 @@ class TrainLoop:
                 logger.log(f"loading model from checkpoint: {resume_checkpoint}...")
                 self.model.load_state_dict(
                     dist_util.load_state_dict(
-                        resume_checkpoint, map_location=dist_util.dev()
+                        resume_checkpoint, map_location=dist_util.dev(),
                     ),
                 )
 
@@ -211,7 +213,7 @@ class TrainLoop:
                             device=self.device,
                             sampler = 'heun',
                         )
-                vtils.save_image(img, '/hub_data/dogyun/gopro_blur_edm/sample-{}.png'.format(self.step), normalize = True)
+                vtils.save_image(img, self.save_dir + '/sample-{}.png'.format(self.step), normalize=True)
                 
         # Save the last checkpoint if it wasn't already saved.
         if (self.step - 1) % self.save_interval != 0:
@@ -288,20 +290,20 @@ class TrainLoop:
         logger.logkv("step", self.step + self.resume_step)
         logger.logkv("samples", (self.step + self.resume_step + 1) * self.global_batch)
 
-    #def save(self):
-    #    def save_checkpoint(rate, params):
-    #        state_dict = self.mp_trainer.master_params_to_state_dict(params)
-    #        if dist.get_rank() == 0:
-    #            logger.log(f"saving model {rate}...")
+    def save(self):
+        def save_checkpoint(rate, params):
+            state_dict = self.mp_trainer.master_params_to_state_dict(params)
+            if dist.get_rank() == 0:
+                logger.log(f"saving model {rate}...")
     #            #if not rate:
     #            #    filename = f"model{(self.step+self.resume_step):06d}.pt"
     #            #else:
     #            #    filename = f"ema_{rate}_{(self.step+self.resume_step):06d}.pt"
     #            #with bf.BlobFile(bf.join(get_blob_logdir(), filename), "wb") as f:
-    #            th.save(state_dict, '/hub_data/dogyun/gopro_blur_edm/ckpt-{}-{}.pt'.format(self.step, rate))
-    #
-    #    for rate, params in zip(self.ema_rate, self.ema_params):
-    #        save_checkpoint(rate, params)
+                th.save(state_dict, self.save_dir + '/ckpt-{}-{}.pt'.format(self.step, rate))
+    
+        for rate, params in zip(self.ema_rate, self.ema_params):
+            save_checkpoint(rate, params)
 
         #if dist.get_rank() == 0:
         #    with bf.BlobFile(
@@ -312,8 +314,8 @@ class TrainLoop:
 
         # Save model parameters last to prevent race conditions where a restart
         # loads model at step N, but opt/ema state isn't saved for step N.
-    #    save_checkpoint(0, self.mp_trainer.master_params)
-    #    dist.barrier()
+        save_checkpoint(0, self.mp_trainer.master_params)
+        dist.barrier()
 
     def save(self):
         if not self.accelerator.is_local_main_process:
