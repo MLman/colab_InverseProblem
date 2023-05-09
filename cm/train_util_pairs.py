@@ -14,7 +14,6 @@ from . import dist_util, logger
 from .fp16_util import MixedPrecisionTrainer
 from .nn import update_ema
 from .resample import LossAwareSampler, UniformSampler
-from .karras_diffusion_encoding import karras_sample
 
 from .fp16_util import (
     get_param_groups_and_shapes,
@@ -323,6 +322,8 @@ class CMTrainLoop(TrainLoop):
     ):
         super().__init__(**kwargs)
         self.training_mode = training_mode
+        setattr(self.diffusion, 'training_mode', training_mode)
+
         self.ema_scale_fn = ema_scale_fn
         self.target_model = target_model
         self.teacher_model = teacher_model
@@ -541,11 +542,11 @@ class CMTrainLoop(TrainLoop):
             micro_sharp = batch[0][i : i + self.microbatch].to(dist_util.dev())
             micro_blur = batch[1][i : i + self.microbatch].to(dist_util.dev())
             micro_cond = None # For our Case
-            import pdb; pdb.set_trace()
             
             last_batch = (i + self.microbatch) >= batch[0].shape[0]
             t, weights = self.schedule_sampler.sample(micro_sharp.shape[0], dist_util.dev())
-
+            
+            logger.log(f"Training mode: {self.training_mode}...")
             ema, num_scales = self.ema_scale_fn(self.global_step)
             if self.training_mode == "progdist":
                 if num_scales == self.ema_scale_fn(0)[1]:
@@ -582,9 +583,20 @@ class CMTrainLoop(TrainLoop):
             elif self.training_mode == "consistency_training":
                 compute_losses = functools.partial(
                     self.diffusion.consistency_losses,
-                    self.ddp_model,
-                    [micro_sharp, micro_blur],
-                    num_scales,
+                    model=self.ddp_model,
+                    x_start=[micro_sharp, micro_blur],
+                    num_scales=num_scales,
+                    target_model=self.target_model,
+                    model_kwargs=micro_cond,
+                )
+            elif self.training_mode == "deblur_consistency_training": # Deblurring consistency training
+                logger.log(f"------- Start ------- \n------- {self.training_mode} -------")
+                compute_losses = functools.partial(
+                    self.diffusion.consistency_losses,
+                    model=self.ddp_model,
+                    x_start=[micro_sharp, micro_blur],
+                    num_scales=num_scales,
+                    teacher_model=self.teacher_model,
                     target_model=self.target_model,
                     model_kwargs=micro_cond,
                 )

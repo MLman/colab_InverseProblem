@@ -1,6 +1,7 @@
 import argparse
 
 from .karras_diffusion import KarrasDenoiser, karras_sample
+from .karras_diffusion_encoding import Enc_KarrasDenoiser, Enc_karras_sample
 from .unet import UNetModel
 import numpy as np
 
@@ -153,6 +154,59 @@ def create_model_and_diffusion_sampler(
         weight_schedule=weight_schedule,
     )
     sampler = karras_sample
+    return model, diffusion, sampler
+
+
+def create_model_and_diffusion_encoding_sampler(
+    image_size,
+    class_cond,
+    learn_sigma,
+    num_channels,
+    num_res_blocks,
+    channel_mult,
+    num_heads,
+    num_head_channels,
+    num_heads_upsample,
+    attention_resolutions,
+    dropout,
+    use_checkpoint,
+    use_scale_shift_norm,
+    resblock_updown,
+    use_fp16,
+    use_new_attention_order,
+    weight_schedule,
+    sigma_min=0.002,
+    sigma_max=80.0,
+    distillation=False,
+    augment_dim=0,
+):
+    model = create_model(
+        image_size,
+        num_channels,
+        num_res_blocks,
+        channel_mult=channel_mult,
+        learn_sigma=learn_sigma,
+        class_cond=class_cond,
+        use_checkpoint=use_checkpoint,
+        attention_resolutions=attention_resolutions,
+        num_heads=num_heads,
+        num_head_channels=num_head_channels,
+        num_heads_upsample=num_heads_upsample,
+        use_scale_shift_norm=use_scale_shift_norm,
+        dropout=dropout,
+        resblock_updown=resblock_updown,
+        use_fp16=use_fp16,
+        use_new_attention_order=use_new_attention_order,
+        augment_dim=augment_dim,
+    )
+    diffusion = Enc_KarrasDenoiser(
+        sigma_data=0.5,
+        sigma_max=sigma_max,
+        sigma_min=sigma_min,
+        distillation=distillation,
+        weight_schedule=weight_schedule,
+    )
+    sampler = Enc_karras_sample
     return model, diffusion, sampler
 
 def create_model(
