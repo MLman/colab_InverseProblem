@@ -179,6 +179,7 @@ def create_model_and_diffusion_encoding_sampler(
     sigma_max=80.0,
     distillation=False,
     augment_dim=0,
+    ode_solver=None,
     loss_norm=None,
     loss_enc_weight=None,
     loss_dec_weight=None
@@ -208,6 +209,7 @@ def create_model_and_diffusion_encoding_sampler(
         sigma_min=sigma_min,
         distillation=distillation,
         weight_schedule=weight_schedule,
+        ode_solver=ode_solver,
         loss_norm=loss_norm,
         loss_enc_weight=loss_enc_weight,
         loss_dec_weight=loss_dec_weight,

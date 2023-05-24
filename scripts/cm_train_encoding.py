@@ -67,7 +67,7 @@ def main():
         raise ValueError(f"unknown training mode {args.training_mode}")
 
     if args.sharp_target_model_path:
-        logger.log(f"loading the shart target model from {args.sharp_target_model_path}")
+        logger.log(f"loading the sharp target model from {args.sharp_target_model_path}")
         model_and_diffusion_kwargs = args_to_dict(args, model_and_diffusion_defaults().keys())
         model_and_diffusion_kwargs["distillation"] = distillation
         args_dict = {   "loss_norm": args.loss_norm, "ode_solver": args.ode_solver,

@@ -186,36 +186,30 @@ class Enc_KarrasDenoiser:
         elif 'typeB' in self.training_mode:
             # Encoding with only [ODE sampling]
             @th.no_grad()
-            def target_enc_fn(samples, t_start, t_end, enc_fn, noise=None):
-                return target_encoding_0_to_t(samples, t_end, enc_fn, **model_kwargs)
+            def target_enc_fn(samples, t_start, t_end, noise=None):
+                return target_encoding_0_to_t(samples, t_end, **model_kwargs)
 
-            def blur_enc_fn(samples, t_start, t_end, enc_fn, noise=None):
-                return encoding_0_to_t(samples, t_end, enc_fn, **model_kwargs)
+            def blur_enc_fn(samples, t_start, t_end, noise=None):
+                return encoding_0_to_t(samples, t_end, **model_kwargs)
         else:
             raise NotImplementedError()
 
         # [2] Denoising Func: Differece is whether Gradient Flows or Not
-        if "case1" in self.training_mode:
-            @th.no_grad()
-            def target_denoise_fn(x, t):
-                return self.denoise(target_model, x, t, **model_kwargs)[1]
-
-            def denoise_fn(x, t):
-                return self.denoise(model, x, t, **model_kwargs)[1]
-
         @th.no_grad()
-        def target_solver(samples, t, next_t):
-            x = samples
-            denoiser = target_denoise_fn(x, t)
-            d = (x - denoiser) / append_dims(t, dims)
-            samples = x + d * append_dims(next_t - t, dims)
-            return samples
+        def target_denoise_fn(x, t):
+            return self.denoise(target_model, x, t, **model_kwargs)[1]
+
+        def denoise_fn(x, t):
+            return self.denoise(model, x, t, **model_kwargs)[1]
         
         @th.no_grad()
-        def heun_solver(samples, t, next_t):
+        def heun_solver(samples, t, next_t, is_target=False):
             x = samples
-            denoiser = denoise_fn(x, t)
-            
+            if is_target:
+                denoiser = target_denoise_fn(x, t)
+            else:
+                denoiser = denoise_fn(x, t)
+
             d = (x - denoiser) / append_dims(t, dims)
             samples = x + d * append_dims(next_t - t, dims)
             denoiser = denoise_fn(samples, next_t)
@@ -226,27 +220,30 @@ class Enc_KarrasDenoiser:
             return samples
         
         @th.no_grad()
-        def euler_solver(samples, t, next_t):
+        def euler_solver(samples, t, next_t, is_target=False):
             x = samples
-            denoiser = denoise_fn(x, t)
+            if is_target:
+                denoiser = target_denoise_fn(x, t)
+            else:
+                denoiser = denoise_fn(x, t)
 
             d = (x - denoiser) / append_dims(t, dims)
             samples = x + d * append_dims(next_t - t, dims)
 
             return samples
         
-        target_ode_fn = {"heun": heun_solver, "euler": euler_solver}[self.ode_solver]
+        ode_solver_fn = {"heun": heun_solver, "euler": euler_solver}[self.ode_solver]
 
 ####################################################################
         @th.no_grad()
-        def target_encoding_sde_t(x, noise, t_start, t_end, **model_kwargs):
+        def target_encoding_sde_t(x, noise, t_start, t_end):
             # 'typeA1': from t to 2t 
             # 'typeA2': from t to T
             if noise is None:
                 noise = th.randn_like(x)
             
             x_t = x + noise * append_dims(t_start, x.ndim)
-            x_t_end = target_ode_fn(samples=x_t, t=t_start, next_t=t_end)
+            x_t_end = ode_solver_fn(samples=x_t, t=t_start, next_t=t_end, is_target=True)
 
             # import pdb; pdb.set_trace()
             # idx_start, idx_end = t_start.int()[0], t_end.int()[0]
@@ -258,7 +255,7 @@ class Enc_KarrasDenoiser:
 
             return x_t_end
         
-        def encoding_sde_t(x, noise, t_start, t_end, **model_kwargs):
+        def encoding_sde_t(x, noise, t_start, t_end):
             # 'typeA1': from t to 2t 
             # 'typeA2': from t to T
             
@@ -266,7 +263,7 @@ class Enc_KarrasDenoiser:
                 noise = th.randn_like(x)
             
             x_t = x + noise * append_dims(t_start, x.ndim)
-            x_t_end = target_ode_fn(samples=x_t, t=t_start, next_t=t_end)
+            x_t_end = ode_solver_fn(samples=x_t, t=t_start, next_t=t_end, is_target=False)
             
             # for cur_t in range(t_start+1, t_end):
                 # x_t = ode_solver(samples=x_t, t=cur_t, next_t=cur_t+1)
@@ -275,19 +272,12 @@ class Enc_KarrasDenoiser:
             return x_t_end
         
         @th.no_grad()
-        def target_encoding_0_to_t(x, t_end, **model_kwargs):
-     
-            x_t = x + noise * append_dims(t_start, x.ndim)
-            x_t_end = target_ode_fn(samples=x_t, t=t_start, next_t=t_end)
+        def target_encoding_0_to_t(x, t_end):
+            return ode_solver_fn(samples=x, t=t_start, next_t=t_end, is_target=True)
 
-            return x_t_end
-        
-        def encoding_0_to_t(x, t_end, **model_kwargs):
+        def encoding_0_to_t(x, t_end):
+            return ode_solver_fn(samples=x, t=t_start, next_t=t_end, is_target=False)
 
-            x_t = x + noise * append_dims(t_start, x.ndim)
-            x_t_end = target_ode_fn(samples=x_t, t=t_start, next_t=t_end)
-
-            return x_t_end
 
 ####################################################################
 
@@ -309,8 +299,8 @@ class Enc_KarrasDenoiser:
         """ [3] Set Timesteps: start & end points"""
         # rand_start = th.randint(self.num_timesteps, (x_start[0].shape[0],))
         # t_start, t_end = rand_start, t
-        if 'typeA' in self.training_mode:
-            t_start, t_end = t2, t  # t2 < t: To encode, we need to move from t2 to t
+        # if 'typeA' in self.training_mode:
+        t_start, t_end = t2, t  # t2 < t: To encode, we need to move from t2 to t
         # TODO: implement later
         # elif 'typeA2' in self.training_mode:
         #     t_start, t_end = t2, T 
@@ -321,7 +311,6 @@ class Enc_KarrasDenoiser:
         # x_t = x_start + noise * append_dims(t, dims)  # To be removed
         # x_prev = x_start[0] + noise * append_dims(t_start, dims)
         # y_prev = x_start[1] + noise * append_dims(t_start, dims)
-        # import pdb; pdb.set_trace()
 
         x_distiller_target = target_enc_fn(x_start[0], t_start, t_end, noise)
         x_distiller_target = x_distiller_target.detach()
@@ -349,6 +338,8 @@ class Enc_KarrasDenoiser:
                 y_0_hat = denoise_fn(y_distiller, t_end)
                 denoised_diff = (x_0_hat - y_0_hat) ** 2
                 loss += mean_flat(denoised_diff) * weights[self.loss_dec_weight]
+            elif "case2" in self.training_mode:
+                loss.requires_grad_(True)
         else:
             raise ValueError(f"Unknown loss norm {self.loss_norm}")
 

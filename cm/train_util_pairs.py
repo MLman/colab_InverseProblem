@@ -445,7 +445,7 @@ class CMTrainLoop(TrainLoop):
                         device=dist_util.dev(),
                         sampler='onestep',
                     )
-                vtils.save_image(img, self.save_dir + '/onestep_40steps_sample-{}.png'.format(self.global_step), normalize=True)
+                vtils.save_image(img, self.save_dir + '/onestep_sample-{}.png'.format(self.global_step), normalize=True)
                 
                 with th.no_grad():
                     model_kwargs = {}
@@ -456,7 +456,7 @@ class CMTrainLoop(TrainLoop):
                         steps=40,
                         model_kwargs=model_kwargs,
                         device=dist_util.dev(),
-                        sampler = 'heun',
+                        sampler='heun',
                     )
                 vtils.save_image(img, self.save_dir + '/heun_40steps_sample-{}.png'.format(self.global_step), normalize=True)
 
@@ -469,7 +469,7 @@ class CMTrainLoop(TrainLoop):
                         steps=120,
                         model_kwargs=model_kwargs,
                         device=dist_util.dev(),
-                        sampler = 'heun',
+                        sampler='heun',
                     )
                 vtils.save_image(img, self.save_dir + '/heun_120steps_sample-{}.png'.format(self.global_step), normalize=True)
 
