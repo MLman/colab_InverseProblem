@@ -2,6 +2,7 @@
 Based on: https://github.com/crowsonkb/k-diffusion
 """
 import random
+from typing import Any
 
 import numpy as np
 import torch as th
@@ -9,7 +10,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from piq import LPIPS
 from torchvision.transforms import RandomCrop
-from . import dist_util
+from . import dist_util, logger
 
 from .nn import mean_flat, append_dims, append_zero
 from .random_util import get_generator
@@ -31,7 +32,7 @@ def get_weightings(weight_schedule, snrs, sigma_data):
     return weightings
 
 
-class KarrasDenoiser:
+class Enc_KarrasDenoiser:
     def __init__(
         self,
         sigma_data: float = 0.5,
@@ -41,6 +42,10 @@ class KarrasDenoiser:
         weight_schedule="karras",
         distillation=False,
         loss_norm="lpips",
+        training_mode=None,
+        ode_solver=None,
+        loss_enc_weight=None,
+        loss_dec_weight=None
     ):
         self.sigma_data = sigma_data
         self.sigma_max = sigma_max
@@ -52,6 +57,11 @@ class KarrasDenoiser:
             self.lpips_loss = LPIPS(replace_pooling=True, reduction="none")
         self.rho = rho
         self.num_timesteps = 40
+        self.trianing_mode = None
+
+        self.ode_solver = ode_solver
+        self.loss_enc_weight = loss_enc_weight
+        self.loss_dec_weight = loss_dec_weight
 
     def get_snr(self, sigmas):
         return sigmas**-2
@@ -77,12 +87,27 @@ class KarrasDenoiser:
         c_in = 1 / (sigma**2 + self.sigma_data**2) ** 0.5
         return c_skip, c_out, c_in
 
-    '''
+    def get_scalings_for_boundary_condition_deblurCM(self, sigma):
+        c_skip = self.sigma_data**2 / (
+            (sigma - self.sigma_min) ** 2 + self.sigma_data**2
+        )
+        c_out = (
+            (sigma - self.sigma_min)
+            * self.sigma_data
+            / (sigma**2 + self.sigma_data**2) ** 0.5
+        )
+        c_in = 1 / (sigma**2 + self.sigma_data**2) ** 0.5
+        return c_skip, c_out, c_in
+
+    """
     For Implementation of Toy Algorithm,
-    Edit this Function, training_losses
-    '''
+    def training_losses is NOT USED
+    Reson: Distillation is not implemented in this function.
+    """
     # x_start: [sharp, blur]
-    def training_losses(self, model, x_start, sigmas, augment_labels=None, model_kwargs=None, noise=None):
+    def training_losses(
+        self, model, x_start, sigmas, augment_labels=None, model_kwargs=None, noise=None
+    ):
         if model_kwargs is None:
             model_kwargs = {}
         if noise is None:
@@ -92,13 +117,14 @@ class KarrasDenoiser:
 
         dims = x_start[0].ndim
         x_sharp_start, x_blur_start = x_start[0], x_start[1]
-        import pdb; pdb.set_trace()
 
         # x_t = x_start + noise * append_dims(sigmas, dims)
-        x_shart_t = x_sharp_start + noise * append_dims(sigmas, dims)
+        x_sharp_t = x_sharp_start + noise * append_dims(sigmas, dims)
         x_blur_t = x_blur_start + noise * append_dims(sigmas, dims)
 
-        model_output, denoised = self.denoise(model, x_t, sigmas, augment_labels, **model_kwargs)
+        model_output, denoised = self.denoise(
+            model, x_sharp_t, sigmas, augment_labels, **model_kwargs
+        )
 
         snrs = self.get_snr(sigmas)
         weights = append_dims(
@@ -117,73 +143,156 @@ class KarrasDenoiser:
     def consistency_losses(
         self,
         model,
-        x_start,
+        x_start,  # [sharp, blur]
         num_scales,
         model_kwargs=None,
-        target_model=None,
-        teacher_model=None,
+        target_model=None, # pretrained model with clean images -> Encoding Target
+        teacher_model=None, 
         teacher_diffusion=None,
         noise=None,
     ):
         if model_kwargs is None:
             model_kwargs = {}
         if noise is None:
-            noise = th.randn_like(x_start)
+            noise = th.randn_like(x_start[0])
+        if not ("deblur" in self.training_mode):
+            raise NotImplementedError()
+        if target_model is None:
+            raise NotImplementedError("Must have a pretrained target model")
 
-        dims = x_start.ndim
+        dims = x_start[0].ndim
 
-        def denoise_fn(x, t):
-            return self.denoise(model, x, t, **model_kwargs)[1]
+        '''
+        Model: We aim to train the 'model'
+        Target: Clean, sharp image trained model, We target to mimic this model's encoding ability
+        ''' 
+        # Case 1: Optimizing with [Encoing & Denoising] simultaneously
+        # Case 2: Optimizing with Only [Encoing]
 
-        if target_model:
+        # [1] Encoding Func
+        '''
+        typeA: def encoding_t: Get x_t, y_t by SDE, and encoding to 2t or T (implement later...)
+        typeB: def encoding_0_to_t_loop: original x, y to x_T, y_T
+        '''
+        if 'typeA' in self.training_mode:
+            # Encoding with [SDE forward & ODE sampling]
+            @th.no_grad()
+            def target_enc_fn(samples, t_start, t_end, noise=None):
+                return target_encoding_sde_t(samples, noise, t_start, t_end, **model_kwargs)
 
+            def blur_enc_fn(samples, t_start, t_end, noise=None):
+                return encoding_sde_t(samples, noise, t_start, t_end, **model_kwargs)
+            
+        elif 'typeB' in self.training_mode:
+            # Encoding with only [ODE sampling]
+            @th.no_grad()
+            def target_enc_fn(samples, t_start, t_end, enc_fn, noise=None):
+                return target_encoding_0_to_t(samples, t_end, enc_fn, **model_kwargs)
+
+            def blur_enc_fn(samples, t_start, t_end, enc_fn, noise=None):
+                return encoding_0_to_t(samples, t_end, enc_fn, **model_kwargs)
+        else:
+            raise NotImplementedError()
+
+        # [2] Denoising Func: Differece is whether Gradient Flows or Not
+        if "case1" in self.training_mode:
             @th.no_grad()
             def target_denoise_fn(x, t):
                 return self.denoise(target_model, x, t, **model_kwargs)[1]
 
-        else:
-            raise NotImplementedError("Must have a target model")
-
-        if teacher_model:
-
-            @th.no_grad()
-            def teacher_denoise_fn(x, t):
-                return teacher_diffusion.denoise(teacher_model, x, t, **model_kwargs)[1]
+            def denoise_fn(x, t):
+                return self.denoise(model, x, t, **model_kwargs)[1]
 
         @th.no_grad()
-        def heun_solver(samples, t, next_t, x0):
+        def target_solver(samples, t, next_t):
             x = samples
-            if teacher_model is None:
-                denoiser = x0
-            else:
-                denoiser = teacher_denoise_fn(x, t)
-
+            denoiser = target_denoise_fn(x, t)
             d = (x - denoiser) / append_dims(t, dims)
             samples = x + d * append_dims(next_t - t, dims)
-            if teacher_model is None:
-                denoiser = x0
-            else:
-                denoiser = teacher_denoise_fn(samples, next_t)
+            return samples
+        
+        @th.no_grad()
+        def heun_solver(samples, t, next_t):
+            x = samples
+            denoiser = denoise_fn(x, t)
+            
+            d = (x - denoiser) / append_dims(t, dims)
+            samples = x + d * append_dims(next_t - t, dims)
+            denoiser = denoise_fn(samples, next_t)
 
             next_d = (samples - denoiser) / append_dims(next_t, dims)
             samples = x + (d + next_d) * append_dims((next_t - t) / 2, dims)
 
             return samples
-
+        
         @th.no_grad()
-        def euler_solver(samples, t, next_t, x0):
+        def euler_solver(samples, t, next_t):
             x = samples
-            if teacher_model is None:
-                denoiser = x0
-            else:
-                denoiser = teacher_denoise_fn(x, t)
+            denoiser = denoise_fn(x, t)
+
             d = (x - denoiser) / append_dims(t, dims)
             samples = x + d * append_dims(next_t - t, dims)
 
             return samples
+        
+        target_ode_fn = {"heun": heun_solver, "euler": euler_solver}[self.ode_solver]
+
+####################################################################
+        @th.no_grad()
+        def target_encoding_sde_t(x, noise, t_start, t_end, **model_kwargs):
+            # 'typeA1': from t to 2t 
+            # 'typeA2': from t to T
+            if noise is None:
+                noise = th.randn_like(x)
+            
+            x_t = x + noise * append_dims(t_start, x.ndim)
+            x_t_end = target_ode_fn(samples=x_t, t=t_start, next_t=t_end)
+
+            # import pdb; pdb.set_trace()
+            # idx_start, idx_end = t_start.int()[0], t_end.int()[0]
+            # for cur_t in range(idx_start+1, idx_end):
+            #     input_t = t_start +
+            #     input_next_t = append_dims(cur_t + 1, t_start.ndim)
+            #     x_t = target_solver(samples=x_t, t=cur_t, next_t=cur_t + 1)
+            # x_t_end = x_t
+
+            return x_t_end
+        
+        def encoding_sde_t(x, noise, t_start, t_end, **model_kwargs):
+            # 'typeA1': from t to 2t 
+            # 'typeA2': from t to T
+            
+            if noise is None:
+                noise = th.randn_like(x)
+            
+            x_t = x + noise * append_dims(t_start, x.ndim)
+            x_t_end = target_ode_fn(samples=x_t, t=t_start, next_t=t_end)
+            
+            # for cur_t in range(t_start+1, t_end):
+                # x_t = ode_solver(samples=x_t, t=cur_t, next_t=cur_t+1)
+            # x_t_end = x_t
+
+            return x_t_end
+        
+        @th.no_grad()
+        def target_encoding_0_to_t(x, t_end, **model_kwargs):
+     
+            x_t = x + noise * append_dims(t_start, x.ndim)
+            x_t_end = target_ode_fn(samples=x_t, t=t_start, next_t=t_end)
+
+            return x_t_end
+        
+        def encoding_0_to_t(x, t_end, **model_kwargs):
+
+            x_t = x + noise * append_dims(t_start, x.ndim)
+            x_t_end = target_ode_fn(samples=x_t, t=t_start, next_t=t_end)
+
+            return x_t_end
+
+####################################################################
 
         indices = th.randint(
-            0, num_scales - 1, (x_start.shape[0],), device=x_start.device
+            0, num_scales - 1, (x_start[0].shape[0],), device=x_start[0].device
         )
 
         t = self.sigma_max ** (1 / self.rho) + indices / (num_scales - 1) * (
@@ -196,51 +305,50 @@ class KarrasDenoiser:
         )
         t2 = t2**self.rho
 
-        x_t = x_start + noise * append_dims(t, dims)
+####################################################################
+        """ [3] Set Timesteps: start & end points"""
+        # rand_start = th.randint(self.num_timesteps, (x_start[0].shape[0],))
+        # t_start, t_end = rand_start, t
+        if 'typeA' in self.training_mode:
+            t_start, t_end = t2, t  # t2 < t: To encode, we need to move from t2 to t
+        # TODO: implement later
+        # elif 'typeA2' in self.training_mode:
+        #     t_start, t_end = t2, T 
+        logger.log(f"t_start: {t_start} \ t_end: {t_end}")
+
+####################################################################
+        """ [4] Get Encoded x and y"""
+        # x_t = x_start + noise * append_dims(t, dims)  # To be removed
+        # x_prev = x_start[0] + noise * append_dims(t_start, dims)
+        # y_prev = x_start[1] + noise * append_dims(t_start, dims)
+        # import pdb; pdb.set_trace()
+
+        x_distiller_target = target_enc_fn(x_start[0], t_start, t_end, noise)
+        x_distiller_target = x_distiller_target.detach()
+
+        y_distiller = blur_enc_fn(x_start[1], t_start, t_end, noise)
 
         dropout_state = th.get_rng_state()
-        distiller = denoise_fn(x_t, t)
 
-        if teacher_model is None:
-            x_t2 = euler_solver(x_t, t, t2, x_start).detach()
-        else:
-            x_t2 = heun_solver(x_t, t, t2, x_start).detach()
+        snrs_t_start = self.get_snr(t_start)
+        weights_t_start = get_weightings(self.weight_schedule, snrs_t_start, self.sigma_data)
 
-        th.set_rng_state(dropout_state)
-        distiller_target = target_denoise_fn(x_t2, t2)
-        distiller_target = distiller_target.detach()
+        snrs_t_end = self.get_snr(t_end)
+        weights_t_end = get_weightings(self.weight_schedule, snrs_t_end, self.sigma_data)
 
-        snrs = self.get_snr(t)
-        weights = get_weightings(self.weight_schedule, snrs, self.sigma_data)
-        if self.loss_norm == "l1":
-            diffs = th.abs(distiller - distiller_target)
-            loss = mean_flat(diffs) * weights
-        elif self.loss_norm == "l2":
-            diffs = (distiller - distiller_target) ** 2
-            loss = mean_flat(diffs) * weights
-        elif self.loss_norm == "l2-32":
-            distiller = F.interpolate(distiller, size=32, mode="bilinear")
-            distiller_target = F.interpolate(
-                distiller_target,
-                size=32,
-                mode="bilinear",
-            )
-            diffs = (distiller - distiller_target) ** 2
-            loss = mean_flat(diffs) * weights
-        elif self.loss_norm == "lpips":
-            if x_start.shape[-1] < 256:
-                distiller = F.interpolate(distiller, size=224, mode="bilinear")
-                distiller_target = F.interpolate(
-                    distiller_target, size=224, mode="bilinear"
-                )
+        weights = {'start': weights_t_start, 'end': weights_t_end}
+       
+        if self.loss_norm == "l2":
+            enc_diff = (x_distiller_target - y_distiller) ** 2
+            # tensor.mean(dim=list(range(1, len(tensor.shape))))
+            loss = mean_flat(enc_diff) * weights[self.loss_enc_weight]
 
-            loss = (
-                self.lpips_loss(
-                    (distiller + 1) / 2.0,
-                    (distiller_target + 1) / 2.0,
-                )
-                * weights
-            )
+            if "case1" in self.training_mode:
+                th.set_rng_state(dropout_state)
+                x_0_hat = target_denoise_fn(x_distiller_target, t_end).detach()
+                y_0_hat = denoise_fn(y_distiller, t_end)
+                denoised_diff = (x_0_hat - y_0_hat) ** 2
+                loss += mean_flat(denoised_diff) * weights[self.loss_dec_weight]
         else:
             raise ValueError(f"Unknown loss norm {self.loss_norm}")
 
@@ -342,10 +450,8 @@ class KarrasDenoiser:
 
         return terms
 
-    # def denoise(self, model, x_t, sigmas, **model_kwargs):
-    def denoise(self, model, x_t, sigmas, augment_labels = None, **model_kwargs):
+    def denoise(self, model, x_t, sigmas, augment_labels=None, **model_kwargs):
         import torch.distributed as dist
-
         if not self.distillation:
             c_skip, c_out, c_in = [
                 append_dims(x, x_t.ndim) for x in self.get_scalings(sigmas)
@@ -356,13 +462,13 @@ class KarrasDenoiser:
                 for x in self.get_scalings_for_boundary_condition(sigmas)
             ]
         rescaled_t = 1000 * 0.25 * th.log(sigmas + 1e-44)
-        # model_output = model(c_in * x_t, rescaled_t, **model_kwargs)
         model_output = model(c_in * x_t, rescaled_t, augment_labels, **model_kwargs)
         denoised = c_out * model_output + c_skip * x_t
         return model_output, denoised
 
 
-def karras_sample(
+# Sampling with Timestep T (x_T) is equivalent with original CMs
+def Enc_karras_sample(
     diffusion,
     model,
     shape,

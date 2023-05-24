@@ -313,11 +313,12 @@ class CMTrainLoop(TrainLoop):
         self,
         *,
         target_model,
-        teacher_model,
-        teacher_diffusion,
+        target_diffusion,
         training_mode,
         ema_scale_fn,
         total_training_steps,
+        teacher_model=None,
+        teacher_diffusion=None,
         **kwargs,
     ):
         super().__init__(**kwargs)
@@ -326,6 +327,7 @@ class CMTrainLoop(TrainLoop):
 
         self.ema_scale_fn = ema_scale_fn
         self.target_model = target_model
+        self.target_diffusion = target_diffusion
         self.teacher_model = teacher_model
         self.teacher_diffusion = teacher_diffusion
         self.total_training_steps = total_training_steps
@@ -427,32 +429,32 @@ class CMTrainLoop(TrainLoop):
             # if self.global_step % self.log_interval == 0:
             #     logger.dumpkvs()
             if (
+                # True
                 self.global_step % self.test_interval == 0
                 and self.test_interval != -1
             ):
                 with th.no_grad():
                     model_kwargs = {}
                     #print(self.sampler)
-                    #pdb.set_trace()
                     img = self.sampler(
-                        diffusion = self.diffusion,
-                        model = self.target_model,
-                        shape = batch.shape,
-                        steps = 40,
-                        model_kwargs = model_kwargs,
+                        diffusion=self.diffusion,
+                        model=self.model,
+                        shape=batch[0].shape,
+                        steps=40,
+                        model_kwargs=model_kwargs,
                         device=dist_util.dev(),
-                        sampler = 'onestep',
+                        sampler='onestep',
                     )
                 vtils.save_image(img, self.save_dir + '/onestep_40steps_sample-{}.png'.format(self.global_step), normalize=True)
                 
                 with th.no_grad():
                     model_kwargs = {}
                     img = self.sampler(
-                        diffusion = self.diffusion,
-                        model = self.target_model,
-                        shape = batch.shape,
-                        steps = 40,
-                        model_kwargs = model_kwargs,
+                        diffusion=self.diffusion,
+                        model=self.model,
+                        shape=batch[0].shape,
+                        steps=40,
+                        model_kwargs=model_kwargs,
                         device=dist_util.dev(),
                         sampler = 'heun',
                     )
@@ -461,11 +463,11 @@ class CMTrainLoop(TrainLoop):
                 with th.no_grad():
                     model_kwargs = {}
                     img = self.sampler(
-                        diffusion = self.diffusion,
-                        model = self.target_model,
-                        shape = batch.shape,
-                        steps = 120,
-                        model_kwargs = model_kwargs,
+                        diffusion=self.diffusion,
+                        model=self.model,
+                        shape=batch[0].shape,
+                        steps=120,
+                        model_kwargs=model_kwargs,
                         device=dist_util.dev(),
                         sampler = 'heun',
                     )
@@ -589,15 +591,17 @@ class CMTrainLoop(TrainLoop):
                     target_model=self.target_model,
                     model_kwargs=micro_cond,
                 )
-            elif self.training_mode == "deblur_consistency_training": # Deblurring consistency training
+            
+            elif "deblur_consistency_training" in self.training_mode: # Deblurring consistency training
                 logger.log(f"------- Start ------- \n------- {self.training_mode} -------")
                 compute_losses = functools.partial(
                     self.diffusion.consistency_losses,
                     model=self.ddp_model,
                     x_start=[micro_sharp, micro_blur],
                     num_scales=num_scales,
-                    teacher_model=self.teacher_model,
+                    # teacher_model=self.teacher_model,
                     target_model=self.target_model,
+                    # target_diffusion=self.target_diffusion,
                     model_kwargs=micro_cond,
                 )
             else:

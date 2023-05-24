@@ -157,14 +157,14 @@ def create_argparser():
         generator="determ",
         clip_denoised=True,
         num_samples=10000,
-        batch_size=1,
+        batch_size=8,
         sampler="heun",
         s_churn=0.0,
         s_tmin=0.0,
         s_tmax=float("inf"),
         s_noise=1.0,
         steps=120,
-        model_path="/home/sojin/diffusion/ckpt-53000-0.9999.pt",
+        model_path="/home/sojin/diffusion/ckpt-153000-0.9999.pt",
         seed=42,
         ts="",
         augment=False,
@@ -174,7 +174,8 @@ def create_argparser():
     parser = argparse.ArgumentParser()
     parser.add_argument('--gpu_num', type=str, default=None)
 
-    parser.add_argument('--log_dir', type=str, default='/hub_data2/sojin/sampling_results/gopro_encoding_0509')
+    # parser.add_argument('--log_dir', type=str, default='/hub_data2/sojin/sampling_results/gopro_encoding_0509')
+    parser.add_argument('--log_dir', type=str, default='/hub_data2/sojin/sampling_results/gopro_clean_ckpt-153000')
     parser.add_argument('-log','--log_suffix', type=str, required=True) # Experiment name, starts with tb(tesorboard) ->  tb_exp1
 
     add_dict_to_argparser(parser, defaults)
