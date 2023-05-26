@@ -38,8 +38,8 @@ def main():
     mkdir(args.log_dir)
 
     dist_util.setup_dist(args.gpu_num)
-    # logger.configure(dir=args.log_dir, format_strs=['stdout','log','csv','tensorboard'], log_suffix=args.log_suffix)
-    logger.configure(dir=args.log_dir, format_strs=['stdout','log','csv'], log_suffix=args.log_suffix)
+    logger.configure(dir=args.log_dir, format_strs=['stdout','log','csv','tensorboard'], log_suffix=args.log_suffix)
+    # logger.configure(dir=args.log_dir, format_strs=['stdout','log','csv'], log_suffix=args.log_suffix)
 
     # Check for configuration
     if not args.augment:
@@ -208,21 +208,21 @@ def main():
 
 def create_argparser():
     defaults = dict(
-        data_dir="/hub_data2/sojin/Restormer_GoPro/train",
-        sharp_target_model_path="/home/sojin/diffusion/ckpt-53000-0.9999.pt",
+        data_dir="/hub_data2/sojin/afhq_blur/afhq_cat_motionblur",
+        sharp_target_model_path="/home/sojin/diffusion/afhq_cat_clean_edm_ckpt-300000-0.9999.pt",
         augment=False,
         augment_dim=0,
         schedule_sampler="uniform",
         lr=1e-4,
         weight_decay=0.0,
         lr_anneal_steps=0,
-        global_batch_size=2,
+        global_batch_size=32,
         batch_size=-1,
         microbatch=-1,  # -1 disables microbatches
         ema_rate="0.9999",  # comma-separated list of EMA values
-        log_interval=10,
-        save_interval=10,
-        test_interval=10,
+        log_interval=100,
+        save_interval=2500,
+        test_interval=2500,
         resume_checkpoint="",
         use_fp16=False,
         fp16_scale_growth=1e-3,

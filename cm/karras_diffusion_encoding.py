@@ -304,7 +304,7 @@ class Enc_KarrasDenoiser:
         # TODO: implement later
         # elif 'typeA2' in self.training_mode:
         #     t_start, t_end = t2, T 
-        logger.log(f"t_start: {t_start} \ t_end: {t_end}")
+        # logger.log(f"t_start: {t_start} \ t_end: {t_end}")
 
 ####################################################################
         """ [4] Get Encoded x and y"""

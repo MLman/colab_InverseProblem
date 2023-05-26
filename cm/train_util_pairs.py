@@ -426,8 +426,8 @@ class CMTrainLoop(TrainLoop):
                 if os.environ.get("DIFFUSION_TRAINING_TEST", "") and self.step > 0:
                     return
 
-            # if self.global_step % self.log_interval == 0:
-            #     logger.dumpkvs()
+            if self.global_step % self.log_interval == 0:
+                logger.dumpkvs()
             if (
                 # True
                 self.global_step % self.test_interval == 0
@@ -548,7 +548,7 @@ class CMTrainLoop(TrainLoop):
             last_batch = (i + self.microbatch) >= batch[0].shape[0]
             t, weights = self.schedule_sampler.sample(micro_sharp.shape[0], dist_util.dev())
             
-            logger.log(f"Training mode: {self.training_mode}...")
+            # logger.log(f"Training mode: {self.training_mode}...")
             ema, num_scales = self.ema_scale_fn(self.global_step)
             if self.training_mode == "progdist":
                 if num_scales == self.ema_scale_fn(0)[1]:
@@ -593,7 +593,7 @@ class CMTrainLoop(TrainLoop):
                 )
             
             elif "deblur_consistency_training" in self.training_mode: # Deblurring consistency training
-                logger.log(f"------- Start ------- \n------- {self.training_mode} -------")
+                # logger.log(f"------- Start ------- \n------- {self.training_mode} -------")
                 compute_losses = functools.partial(
                     self.diffusion.consistency_losses,
                     model=self.ddp_model,
@@ -652,12 +652,12 @@ class CMTrainLoop(TrainLoop):
         #         th.save(self.opt.state_dict(), f)
 
         if dist.get_rank() == 0:
-            if self.target_model:
-                logger.log("saving target model state")
-                filename = f"target_model{step:06d}.pt"
+            # if self.target_model:
+                # logger.log("saving target model state")
+                # filename = f"target_model{step:06d}.pt"
                 # with bf.BlobFile(bf.join(get_blob_logdir(), filename), "wb") as f:
                     # th.save(self.target_model.state_dict(), f)
-                th.save(self.target_model.state_dict(), self.save_dir + f'/{filename}')
+                # th.save(self.target_model.state_dict(), self.save_dir + f'/{filename}')
                 
             if self.teacher_model and self.training_mode == "progdist":
                 logger.log("saving teacher model state")
