@@ -175,7 +175,7 @@ def main():
     ### Check loaded parameters ###
     # for param in target_model.parameters(): 
         # print(param)
-
+    logger.log(f"total_training_steps >>> {args.total_training_steps}")
     logger.log("training...")
     logger.log(f"with the training mode >>> {args.training_mode}")
     CMTrainLoop(
@@ -220,9 +220,9 @@ def create_argparser():
         batch_size=-1,
         microbatch=-1,  # -1 disables microbatches
         ema_rate="0.9999",  # comma-separated list of EMA values
-        log_interval=100,
-        save_interval=2500,
-        test_interval=2500,
+        log_interval=250,
+        save_interval=5000,
+        test_interval=5000,
         resume_checkpoint="",
         use_fp16=False,
         fp16_scale_growth=1e-3,
@@ -238,6 +238,7 @@ def create_argparser():
     parser.add_argument('--loss_norm', type=str, default="l2")
     parser.add_argument('--loss_enc_weight', type=str, default="start")
     parser.add_argument('--loss_dec_weight', type=str, default="end")
+    # parser.add_argument('--total_training_steps', type=int, default=600000)
 
     parser.add_argument('--log_dir', type=str, default='/hub_data2/sojin/0509debugging')
     parser.add_argument('-log','--log_suffix', type=str, required=True) # Experiment name, starts with tb(tesorboard) ->  tb_exp1
