@@ -60,7 +60,8 @@ for ode_solver in args.ode_solver:
     for loss_enc_weight in args.loss_enc_weight:
         for loss_dec_weight in args.loss_dec_weight:
             
-            args.log_dir = f'{args.log_directory}weight_enc:{loss_enc_weight}_dec:{loss_dec_weight}'
+
+            args.log_dir = os.path.join(args.log_directory, f'loss_weight_enc:{loss_enc_weight}_dec:{loss_dec_weight}')
             sub_process_log = f'{args.log_dir}/run_command.txt'
             os.makedirs(args.log_dir, exist_ok=True)
 
