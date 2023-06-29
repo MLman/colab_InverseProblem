@@ -3,14 +3,14 @@ Logger copied from OpenAI baselines to avoid extra RL-based dependencies:
 https://github.com/openai/baselines/blob/ea25b9e8b234e6ee1bca43083f8f3cf974143998/baselines/logger.py
 """
 
-import os
-import sys
-import shutil
-import os.path as osp
-import json
-import time
 import datetime
+import json
+import os
+import os.path as osp
+import shutil
+import sys
 import tempfile
+import time
 import warnings
 from collections import defaultdict
 from contextlib import contextmanager
@@ -40,7 +40,7 @@ class HumanOutputFormat(KVWriter, SeqWriter):
             self.own_file = True
         else:
             assert hasattr(filename_or_file, "read"), (
-                "expected file or str, got %s" % filename_or_file
+                    "expected file or str, got %s" % filename_or_file
             )
             self.file = filename_or_file
             self.own_file = False
@@ -159,23 +159,21 @@ class TensorBoardOutputFormat(KVWriter):
         prefix = "events"
         path = osp.join(osp.abspath(dir), prefix)
         import tensorflow as tf
+        from tensorflow.python import pywrap_tensorflow
         from tensorflow.core.util import event_pb2
-        from tensorflow.core.framework import summary_pb2
         from tensorflow.python.util import compat
-        from tensorflow.python.client import _pywrap_events_writer
 
         self.tf = tf
         self.event_pb2 = event_pb2
-        self.summary_pb2 = summary_pb2
-        self.writer = _pywrap_events_writer.EventsWriter(compat.as_bytes(path))
+        self.pywrap_tensorflow = pywrap_tensorflow
+        self.writer = pywrap_tensorflow.EventsWriter(compat.as_bytes(path))
 
     def writekvs(self, kvs):
-        summary = self.summary_pb2.Summary()
+        def summary_val(k, v):
+            kwargs = {"tag": k, "simple_value": float(v)}
+            return self.tf.Summary.Value(**kwargs)
 
-        for k, v in kvs.items():
-            value = summary.value.add()
-            value.tag = k
-            value.simple_value = float(v)
+        summary = self.tf.Summary(value=[summary_val(k, v) for k, v in kvs.items()])
         event = self.event_pb2.Event(wall_time=time.time(), summary=summary)
         event.step = (
             self.step
@@ -494,4 +492,3 @@ def scoped_configure(dir=None, format_strs=None, comm=None):
     finally:
         Logger.CURRENT.close()
         Logger.CURRENT = prevlogger
-

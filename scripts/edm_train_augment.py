@@ -135,7 +135,7 @@ def main():
         schedule_sampler=schedule_sampler,
         weight_decay=args.weight_decay,
         lr_anneal_steps=args.lr_anneal_steps,
-        log_dir=args.log_dir,
+        # log_dir=args.log_dir,
     ).run_loop()
 
 
@@ -147,7 +147,7 @@ def create_argparser():
         lr=1e-4,
         weight_decay=0.0,
         lr_anneal_steps=0,
-        global_batch_size=2048,
+        global_batch_size=128,
         batch_size=-1,
         microbatch=-1,  # -1 disables microbatches
         ema_rate="0.9999",  # comma-separated list of EMA values
@@ -163,6 +163,9 @@ def create_argparser():
 
     parser.add_argument('--log_dir', type=str, default='/hub_data2/sojin/tmp')
     parser.add_argument('-log','--log_suffix', type=str, required=True) # Experiment name, starts with tb(tesorboard) ->  tb_exp1
+    parser.add_argument('--augment', type=bool, default=False)
+    parser.add_argument('--user_data', type=bool, default=True)
+    parser.add_argument('--dataset', type=str, default='cifar10')
 
     add_dict_to_argparser(parser, defaults)
     return parser

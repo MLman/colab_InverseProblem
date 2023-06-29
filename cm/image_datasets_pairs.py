@@ -40,8 +40,10 @@ def load_data_pairs(
     if not data_dir:
         raise ValueError("unspecified data directory")
 
-    sharp_dir = os.path.join(data_dir, "target")
-    blur_dir = os.path.join(data_dir, "input")
+    sharp_dir = os.path.join(data_dir, "sharp") 
+    blur_dir = os.path.join(data_dir, "blur")
+    # sharp_dir = os.path.join(data_dir, "target") 
+    # blur_dir = os.path.join(data_dir, "input")
     all_sharp_files = _list_image_files_recursively(sharp_dir)
     all_blur_files = _list_image_files_recursively(blur_dir)
     assert len(all_sharp_files) == len(all_blur_files)

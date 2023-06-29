@@ -21,3 +21,7 @@ dist/
 *.DS_Store
 *.png
 *.pt
+*.txt
+*.csv
+wandb/
+models
