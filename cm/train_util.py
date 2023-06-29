@@ -126,6 +126,7 @@ class TrainLoop:
             self.ddp_model = self.model
 
         self.step = self.resume_step
+        logger.log(f"Compeleted: Init TrainLoop...")
 
     def _load_and_sync_parameters(self):
         resume_checkpoint = find_resume_checkpoint() or self.resume_checkpoint
@@ -174,6 +175,7 @@ class TrainLoop:
     def run_loop(self):
         while not self.lr_anneal_steps or self.step < self.lr_anneal_steps:
             batch, cond = next(self.data)
+
             self.run_step(batch, cond)
             if self.step % self.log_interval == 0:
                 logger.dumpkvs()
@@ -207,8 +209,8 @@ class TrainLoop:
         self.forward_backward(batch, cond)
         took_step = self.mp_trainer.optimize(self.opt)
         if took_step:
-            # if self.step % 100 == 0:
-            logger.log("Current Step {}".format(self.step))
+            if self.step % 100 == 0:
+                logger.log("Current Step {}".format(self.step))
             self.step += 1
             self._update_ema()
         self._anneal_lr()

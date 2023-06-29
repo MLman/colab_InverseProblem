@@ -588,18 +588,17 @@ class UNetModel(nn.Module):
         if self.num_classes is not None:
             self.label_emb = nn.Embedding(num_classes, time_embed_dim)
 
-
-        # Non-leaky augmentation
-        self.augment_dim = augment_dim
-        if self.augment_dim != 0:
-            self.map_augment = linear(in_features = self.augment_dim, out_features = time_embed_dim, bias = False)
-
-
         ch = input_ch = int(channel_mult[0] * model_channels)
         self.input_blocks = nn.ModuleList(
             [TimestepEmbedSequential(conv_nd(dims, in_channels, ch, 3, padding=1))]
         )
         self._feature_size = ch
+        
+        # Non-leaky augmentation
+        self.augment_dim = augment_dim
+        if self.augment_dim != 0:
+            self.map_augment = linear(in_features = self.augment_dim, out_features = time_embed_dim, bias = False)
+
         input_block_chans = [ch]
         ds = 1
         for level, mult in enumerate(channel_mult):

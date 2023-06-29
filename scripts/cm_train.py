@@ -120,6 +120,7 @@ def main():
     logger.log("training...")
     CMTrainLoop(
         model=model,
+        sampler=args.sampler,
         target_model=target_model,
         teacher_model=teacher_model,
         teacher_diffusion=teacher_diffusion,
@@ -134,6 +135,7 @@ def main():
         ema_rate=args.ema_rate,
         log_interval=args.log_interval,
         save_interval=args.save_interval,
+        test_interval=args.test_interval,
         resume_checkpoint=args.resume_checkpoint,
         use_fp16=args.use_fp16,
         fp16_scale_growth=args.fp16_scale_growth,
@@ -146,6 +148,7 @@ def main():
 def create_argparser():
     defaults = dict(
         data_dir="",
+        sampler='heun',
         schedule_sampler="uniform",
         lr=1e-4,
         weight_decay=0.0,
@@ -156,6 +159,7 @@ def create_argparser():
         ema_rate="0.9999",  # comma-separated list of EMA values
         log_interval=10,
         save_interval=10000,
+        test_interval=1000,
         resume_checkpoint="",
         use_fp16=False,
         fp16_scale_growth=1e-3,
@@ -169,3 +173,5 @@ def create_argparser():
 
 if __name__ == "__main__":
     main()
+
+# python scripts/cm_train.py --loss_norm lpips --attention_resolutions 16,8 --class_cond False --dropout 0.0 --ema_rate 0.999,0.9999,0.9999432189950708 --global_batch_size 2 --image_size 256 --lr 0.00005 --num_channels 128 --num_res_blocks 2 --resblock_updown True --schedule_sampler uniform --use_fp16 True --use_scale_shift_norm True --weight_decay 0.0 --weight_schedule uniform --data_dir /hub_data2/sojin/Restormer_GoPro/train/target --training_mode consistency_training --target_ema_mode adaptive --start_ema 0.95 --scale_mode progressive --sampler heun
