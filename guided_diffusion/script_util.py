@@ -24,6 +24,37 @@ def diffusion_defaults():
     )
 
 
+def ffhq_diffusion_defaults():
+    """
+    Defaults for image and classifier training.
+    """
+    return dict(
+        learn_sigma=True,
+        diffusion_steps=1000,
+        noise_schedule="linear",
+        timestep_respacing="",
+        use_kl=False,
+        predict_xstart=False,
+        rescale_timesteps=False,
+        rescale_learned_sigmas=False,
+    )
+    
+    
+def imagenet_diffusion_defaults():
+    """
+    Defaults for image and classifier training.
+    """
+    return dict(
+        learn_sigma=True,
+        diffusion_steps=1000,
+        noise_schedule="linear",
+        timestep_respacing="",
+        use_kl=False,
+        predict_xstart=False,
+        rescale_timesteps=False,
+        rescale_learned_sigmas=False,
+    )
+
 def classifier_defaults():
     """
     Defaults for classifier models.
@@ -41,6 +72,79 @@ def classifier_defaults():
 
 
 def model_and_diffusion_defaults():
+    """
+    Defaults for image training.
+    """
+    res = dict(
+        image_size=256,
+        num_channels=128,
+        num_res_blocks=2,
+        num_heads=4,
+        num_heads_upsample=-1,
+        num_head_channels=-1,
+        attention_resolutions="16,8",
+        channel_mult="",
+        dropout=0.0,
+        class_cond=False,
+        use_checkpoint=False,
+        use_scale_shift_norm=True,
+        resblock_updown=False,
+        use_fp16=False,
+        use_new_attention_order=False,
+    )
+    res.update(diffusion_defaults())
+    return res
+
+def ffhq_model_and_diffusion_defaults():
+    """
+    Defaults for image training.
+    """
+    res = dict(
+        image_size=256,
+        num_channels=128,
+        num_res_blocks=1,
+        channel_mult="",
+        class_cond=False,
+        use_checkpoint=False,
+        attention_resolutions="16",
+        num_heads=4,
+        num_head_channels=64,
+        num_heads_upsample=-1,
+        use_scale_shift_norm=True,
+        dropout=0.0,
+        resblock_updown=True,
+        use_fp16=False,
+        use_new_attention_order=False,
+    )
+    res.update(ffhq_diffusion_defaults())
+    return res
+
+
+def imagenet_model_and_diffusion_defaults():
+    """
+    Defaults for image training.
+    """
+    res = dict(
+        image_size=256,
+        num_channels=256,
+        num_res_blocks=2,
+        num_heads=4,
+        num_heads_upsample=-1,
+        num_head_channels=64,
+        attention_resolutions="32,16,8",
+        channel_mult="",
+        dropout=0.0,
+        class_cond=False,
+        use_checkpoint=False,
+        use_scale_shift_norm=True,
+        resblock_updown=True,
+        use_fp16=False,
+        use_new_attention_order=False,
+    )
+    res.update(imagenet_diffusion_defaults())
+    return res
+
+def gopro_model_and_diffusion_defaults():
     """
     Defaults for image training.
     """
