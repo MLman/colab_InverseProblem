@@ -10,6 +10,7 @@ import random
 import numpy as np
 import torch as th
 import torch.distributed as dist
+import torchvision.utils as vtils
 
 from cm import dist_util, logger
 from cm.image_datasets_pairs import load_data_pairs
@@ -22,7 +23,7 @@ from cm.script_util_ori import (
     args_to_dict,
 )
 from cm.random_util import get_generator
-from cm.karras_diffusion import karras_sample
+from cm.karras_diffusion_reversed import karras_sample
 
 from PIL import Image
 
@@ -40,19 +41,23 @@ def main():
     args = create_argparser().parse_args()
     
     # set save directory
-    args.log_suffix = f'{args.toy_exp}_{args.log_suffix}'
+    model_name = args.model_path.split('/')[-1].split('.')[0]
+    data_name = args.data_dir.split('/')[-1]
+
+    table_name = f'Model:{model_name}_{data_name}_sampler:{args.sampler}'
+    args.log_suffix = f'{args.toy_exp}_{args.log_suffix}_{table_name}'
     args.log_dir = os.path.join(args.log_dir, args.log_suffix)
-    args.log_suffix = '_' + args.log_suffix
     save_dir = args.log_dir
     mkdir(save_dir)
-    
+  
     dist_util.setup_dist(args.gpu)
     logger.configure(dir=args.log_dir, format_strs=['stdout','log','csv','tensorboard'], log_suffix=args.log_suffix)
-    
-    # if args.use_wandb:
-        # import wandb
-        # table_name = f"steps_{args.steps}_batch_{args.batch_size}"
-        # wandb.init(project="toy", name=table_name)
+
+    if args.use_wandb:
+        import wandb
+        # wandb.init(project="debug", name=table_name)
+        wandb.init(project="toy", name=table_name)
+        wandb.config.update(args)
     
     if "consistency" in args.training_mode:
         distillation = True
@@ -80,37 +85,43 @@ def main():
         ts = None
 
     # Set dataloader for toy experiments
-    if args.toy_exp is not None:
-        dataloader = load_data_pairs(
-            data_dir=args.data_dir,
-            batch_size=args.batch_size,
-            image_size=args.image_size,
-            class_cond=args.class_cond,
-        )
-    else:
-        dataloader = None   
+    dataloader = load_data_pairs(
+        data_dir=args.data_dir,
+        batch_size=args.batch_size,
+        image_size=args.image_size,
+        class_cond=args.class_cond,
+    )
 
-
-    all_images = []
-    all_labels = []
     generator = get_generator(args.generator, args.num_samples, args.seed)
-
-    logger.log(f"Consistency Models official pretrained model")
+    
     set_random_seed(args.seed)
-    while len(all_images) * args.batch_size < args.num_samples:
+    for i, (batch, extra) in enumerate(dataloader):
+
         model_kwargs = {}
         if args.class_cond:
             classes = th.randint(
                 low=0, high=NUM_CLASSES, size=(args.batch_size,), device=dist_util.dev()
             )
             model_kwargs["y"] = classes
-        
-        cur_img_cnt = len(all_images) * args.batch_size
-        
-        sample = karras_sample(
+
+        x_sharp = batch[:][0].to(dist_util.dev())
+        x_blur = batch[:][1].to(dist_util.dev())
+
+        # forward_dir = f'{save_dir}/{i}_forward_'
+        backward_dir = f'{save_dir}/{i}_'
+
+        vtils.save_image(x_sharp, f'{save_dir}/Ori_sharp{i}.png', range=(-1,1), normalize=True)
+        vtils.save_image(x_blur, f'{save_dir}/Ori_blur{i}.png', range=(-1,1), normalize=True)
+
+        ori_sharp = x_sharp.clone()
+        ori_blur = x_blur.clone()
+
+        sample_sharp, sample_blur = karras_sample(
             diffusion,
             model,
             (args.batch_size, 3, args.image_size, args.image_size),
+            images=[x_sharp, x_blur],
+            original_image=[ori_sharp, ori_blur],
             steps=args.steps,
             model_kwargs=model_kwargs,
             device=dist_util.dev(),
@@ -124,33 +135,81 @@ def main():
             s_noise=args.s_noise,
             generator=generator,
             ts=ts,
+            progress=True,
+            use_wandb=args.use_wandb,
+            directory=backward_dir,
         )
-        sample = ((sample + 1) * 127.5).clamp(0, 255).to(th.uint8)
-        sample = sample.permute(0, 2, 3, 1)
-        sample = sample.contiguous()
+        logger.log(f"obtained reconstructed sharp/blur images...")
+        vtils.save_image(sample_sharp, f'{save_dir}/Recon_sharp{i}.png', range=(-1,1), normalize=True)
+        vtils.save_image(sample_blur, f'{save_dir}/Recon_blur{i}.png', range=(-1,1), normalize=True)
 
-        # gathered_samples = [th.zeros_like(sample) for _ in range(dist.get_world_size())]
-        # dist.all_gather(gathered_samples, sample)  # gather not supported with NCCL
-        # all_images.extend([sample.cpu().numpy() for sample in gathered_samples])
-        all_images.extend([sample.cpu().numpy()])
-        if args.class_cond:
-            # gathered_labels = [
-            #     th.zeros_like(classes) for _ in range(dist.get_world_size())
-            # ]
-            # dist.all_gather(gathered_labels, classes)
-            # all_labels.extend([labels.cpu().numpy() for labels in gathered_labels])
-            all_labels.extend([th.zeros_like(classes).cpu().numpy()])
-        logger.log(f"created {len(all_images) * args.batch_size} samples")
+        break
 
-        # Save Image as png format
-        new_img_arr = all_images[len(all_images)-1]
-        # logger.log(f"len(all_images): {len(all_images)}")
+    logger.log("Completed")
+
+
+################################################################        
+
+    # all_images = []
+    # all_labels = []
+    # generator = get_generator(args.generator, args.num_samples, args.seed)
+
+    # logger.log(f"Consistency Models official pretrained model")
+    # set_random_seed(args.seed)
+    # while len(all_images) * args.batch_size < args.num_samples:
+    #     model_kwargs = {}
+    #     if args.class_cond:
+    #         classes = th.randint(
+    #             low=0, high=NUM_CLASSES, size=(args.batch_size,), device=dist_util.dev()
+    #         )
+    #         model_kwargs["y"] = classes
         
-        for idx in range(args.batch_size):
-            img = Image.fromarray(new_img_arr[idx])
-            img_path = f'{save_dir}/{cur_img_cnt + idx}.png'
-            img.save(img_path)
-            logger.log(f"img_path: {img_path}")
+    #     cur_img_cnt = len(all_images) * args.batch_size
+        
+    #     sample = karras_sample(
+    #         diffusion,
+    #         model,
+    #         (args.batch_size, 3, args.image_size, args.image_size),
+    #         steps=args.steps,
+    #         model_kwargs=model_kwargs,
+    #         device=dist_util.dev(),
+    #         clip_denoised=args.clip_denoised,
+    #         sampler=args.sampler,
+    #         sigma_min=args.sigma_min,
+    #         sigma_max=args.sigma_max,
+    #         s_churn=args.s_churn,
+    #         s_tmin=args.s_tmin,
+    #         s_tmax=args.s_tmax,
+    #         s_noise=args.s_noise,
+    #         generator=generator,
+    #         ts=ts,
+    #     )
+    #     sample = ((sample + 1) * 127.5).clamp(0, 255).to(th.uint8)
+    #     sample = sample.permute(0, 2, 3, 1)
+    #     sample = sample.contiguous()
+
+    #     # gathered_samples = [th.zeros_like(sample) for _ in range(dist.get_world_size())]
+    #     # dist.all_gather(gathered_samples, sample)  # gather not supported with NCCL
+    #     # all_images.extend([sample.cpu().numpy() for sample in gathered_samples])
+    #     all_images.extend([sample.cpu().numpy()])
+    #     if args.class_cond:
+    #         # gathered_labels = [
+    #         #     th.zeros_like(classes) for _ in range(dist.get_world_size())
+    #         # ]
+    #         # dist.all_gather(gathered_labels, classes)
+    #         # all_labels.extend([labels.cpu().numpy() for labels in gathered_labels])
+    #         all_labels.extend([th.zeros_like(classes).cpu().numpy()])
+    #     logger.log(f"created {len(all_images) * args.batch_size} samples")
+
+    #     # Save Image as png format
+    #     new_img_arr = all_images[len(all_images)-1]
+    #     # logger.log(f"len(all_images): {len(all_images)}")
+        
+    #     for idx in range(args.batch_size):
+    #         img = Image.fromarray(new_img_arr[idx])
+    #         img_path = f'{save_dir}/{cur_img_cnt + idx}.png'
+    #         img.save(img_path)
+    #         logger.log(f"img_path: {img_path}")
 
     logger.log("sampling complete")
 
@@ -187,8 +246,10 @@ def create_argparser():
     
     parser.add_argument('--gpu', type=str, default='0')
     # parser.add_argument('--log_dir', type=str, default='/hub_data1/sojin/sampling_results/')
-    parser.add_argument('--log_dir', type=str, default='./cm_official_pretrained_model/')
-    parser.add_argument('--toy_exp', type=str, default='0630')
+    # parser.add_argument('--log_dir', type=str, default='./cm_official_pretrained_model/')
+    # parser.add_argument('--log_dir', type=str, default='./cm_model_reversedsampling/')
+    parser.add_argument('--log_dir', type=str, default='./0704debug/')
+    parser.add_argument('--toy_exp', type=str, default='0704')
     # parser.add_argument('--toy_exp', type=str, default='None')
     parser.add_argument('-log','--log_suffix', type=str, required=True) # Experiment name, starts with tb(tesorboard) ->  tb_exp1
     parser.add_argument('--use_wandb', type=bool, default=False) # Experiment name, starts with tb(tesorboard) ->  tb_exp1
