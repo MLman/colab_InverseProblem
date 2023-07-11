@@ -25,3 +25,5 @@ dist/
 *.csv
 wandb/
 models
+
+results_toy
