@@ -611,6 +611,7 @@ class GaussianDiffusion:
             eta=0.0,
             use_wandb=False,
             directory=None,
+            debug_mode=False,
     ):
         """
         Generate samples from the model using DDIM.
@@ -632,6 +633,7 @@ class GaussianDiffusion:
                 original_image=original_image,
                 use_wandb=use_wandb,
                 directory=directory,
+                debug_mode=debug_mode,
         ):
             final = sample
 
@@ -655,6 +657,7 @@ class GaussianDiffusion:
             original_image=None,
             use_wandb=False,
             directory=None,
+            debug_mode=False,
     ):
         """
         Use DDIM to sample from the model and yield intermediate samples from
@@ -716,13 +719,15 @@ class GaussianDiffusion:
                         'dec_sharp_L2': loss_sharp['l2'], 'dec_blur_L2': loss_blur['l2'],
                         }
                 wandb.log(wandb_log)
-            if i % 10 == 0:
+            if i % 100 == 0:
                 vtils.save_image(out_sharp["pred_xstart"], f'{directory}sharp_x_0_hat_step{i}.png', range=(-1,1), normalize=True)
                 vtils.save_image(out_blur["pred_xstart"], f'{directory}blur_x_0_hat_step{i}.png', range=(-1,1), normalize=True)
             if i % 100 == 0:
                 vtils.save_image(out_sharp["sample"], f'{directory}sharp_x_t_step{i}.png', range=(-1,1), normalize=True)
                 vtils.save_image(out_blur["sample"], f'{directory}blur_x_t_step{i}.png', range=(-1,1), normalize=True)
-
+            
+            if debug_mode:
+                break
 
     def ddim_reverse_sample(
             self,
@@ -781,6 +786,7 @@ class GaussianDiffusion:
             eta=0.0,
             use_wandb=False,
             directory=None,
+            debug_mode=False,
     ):
         """
         XS: Encode image into latent using DDIM ODE.
@@ -799,6 +805,7 @@ class GaussianDiffusion:
                 original_image=original_image,
                 use_wandb=use_wandb,
                 directory=directory,
+                debug_mode=debug_mode,
         ):
             final = sample
 
@@ -821,6 +828,7 @@ class GaussianDiffusion:
             original_image=None,
             use_wandb=False,
             directory=None,
+            debug_mode=False,
     ):
         """
         XS: Use DDIM to perform encoding / inference, until isotropic Gaussian.
@@ -877,13 +885,15 @@ class GaussianDiffusion:
                     'enc_sharp_L2': loss_sharp['l2'], 'enc_blur_L2': loss_blur['l2'],
                     }
                 wandb.log(wandb_log)
-            if i % 10 == 0:
+            if i % 100 == 0:
                 vtils.save_image(out_sharp["pred_xstart"], f'{directory}sharp_x_0_hat_step{i}.png', range=(-1,1), normalize=True)
                 vtils.save_image(out_blur["pred_xstart"], f'{directory}blur_x_0_hat_step{i}.png', range=(-1,1), normalize=True)
             if i % 100 == 0:
                 vtils.save_image(out_sharp["sample"], f'{directory}sharp_x_t_step{i}.png', range=(-1,1), normalize=True)
                 vtils.save_image(out_blur["sample"], f'{directory}blur_x_t_step{i}.png', range=(-1,1), normalize=True)
 
+            if debug_mode:
+                break
 
     def _vb_terms_bpd(
             self, model, x_start, x_t, t, clip_denoised=True, model_kwargs=None
