@@ -273,7 +273,7 @@ def main():
                 wandb.log(loss_dict)
 
             with open(os.path.join(save_dir,'results.txt'),'a') as f:
-                results = f'Epoch{epoch}: {i}th iter --->' + "[PSNR]: %.4f, [SSIM]: %.4f, [L2 loss]: %.4f, [LPIPS loss]: %.4"% (psnr, ssim, l2_loss, lpips_loss)+'\n'
+                results = f'Epoch{epoch}: {i}th iter --->' + "[PSNR]: %.4f, [SSIM]: %.4f, [L2 loss]: %.4f, [LPIPS loss]: %.4f"% (psnr, ssim, l2_loss, lpips_loss) + '\n'
                 print(results)
                 f.write(results)
 
