@@ -4,6 +4,7 @@ import scipy
 import torch.nn.functional as F
 from torch import nn
 from torch.autograd import Variable
+import torchvision.utils as vtils
 import matplotlib.pyplot as plt
 from motionblur.motionblur import Kernel
 
@@ -281,31 +282,37 @@ class Blurkernel(nn.Module):
 
 
 class DeblurKernel(nn.Module):
-    def __init__(self, blur_type=None, kernel_size=31, std=3.0, device=None):
+    def __init__(self, blur_type='gaussian', kernel_size=31, std=3.0, device=None):
         super().__init__()
         self.blur_type = blur_type
         self.kernel_size = kernel_size
         self.std = std
         self.device = device
-        self.seq = nn.Sequential(
+        self.conv = nn.Sequential(
             nn.ReflectionPad2d(self.kernel_size//2),
-            nn.Conv2d(3, 3, self.kernel_size, stride=1, padding=0, bias=False, groups=3)
+            nn.ConvTranspose2d(3, 3, self.kernel_size, stride=1, padding=0, bias=False, groups=3)
         )
 
         self.weights_init()
-
+     
     def forward(self, x):
-        return self.seq(x)
+        return self.conv(x)
 
     def weights_init(self):
-        if self.blur_type == None:
-            k = RandomInitKernel(size=(self.kernel_size, self.kernel_size)).kernelMatrix
-            k = torch.from_numpy(k).type(torch.float32)
+        if self.blur_type == "gaussian":
+            n = np.zeros((self.kernel_size, self.kernel_size))
+            n[self.kernel_size // 2,self.kernel_size // 2] = 1
+            k = scipy.ndimage.gaussian_filter(n, sigma=self.std)
+            k = torch.from_numpy(k)
             self.k = k
             for name, f in self.named_parameters():
                 f.data.copy_(k)
-        else:
-            raise NotImplementedError()
+        # k = torch.zeros((self.kernel_size, self.kernel_size)).to(self.device)
+        # nn.init.uniform_(k)
+        # # vtils.save_image(k, 'filter.png', range=(-1,1), normalize=True)
+        # self.k = k
+        # for name, f in self.named_parameters():
+        #     f.data.copy_(k)
 
     def update_weights(self, k):
         if not torch.is_tensor(k):

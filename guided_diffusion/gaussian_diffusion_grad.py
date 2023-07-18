@@ -16,6 +16,8 @@ from .nn import mean_flat
 from piq import LPIPS
 import wandb
 import torchvision.utils as vtils
+from skimage.metrics import peak_signal_noise_ratio as psnr_loss
+from skimage.metrics import structural_similarity as ssim_loss
 
 lpips = LPIPS(replace_pooling=True, reduction="none")
 def get_loss(input, target):
@@ -602,6 +604,7 @@ class GaussianDiffusion:
             shape,
             noise=None,
             original_image=None,
+            image_deblur=None,
             clip_denoised=True,
             denoised_fn=None,
             cond_fn=None,
@@ -623,6 +626,7 @@ class GaussianDiffusion:
                 model,
                 shape,
                 noise=noise,
+                image_deblur=image_deblur,
                 clip_denoised=clip_denoised,
                 denoised_fn=denoised_fn,
                 cond_fn=cond_fn,
@@ -646,6 +650,7 @@ class GaussianDiffusion:
             model,
             shape,
             noise=None,
+            image_deblur=None,
             clip_denoised=True,
             denoised_fn=None,
             cond_fn=None,
@@ -697,6 +702,7 @@ class GaussianDiffusion:
             yield out_blur
             image_blur = out_blur["sample"]
             loss_blur = get_loss(ori_blur, out_blur["pred_xstart"])
+            image_blur.detach_()
 
             if use_wandb:
                 wandb_log = {'dec_blur_LPIPS': loss_blur['lpips'], 'dec_blur_L2': loss_blur['l2']}
@@ -752,10 +758,12 @@ class GaussianDiffusion:
 
         return {"sample": mean_pred, "pred_xstart": out["pred_xstart"]}
 
+
     def ddim_reverse_sample_loop(
             self,
             model,
             image,
+            kernel,
             original_image,
             clip_denoised=True,
             denoised_fn=None,
@@ -767,6 +775,7 @@ class GaussianDiffusion:
             use_wandb=False,
             directory=None,
             debug_mode=False,
+            norm=None
     ):
         """
         XS: Encode image into latent using DDIM ODE.
@@ -775,6 +784,7 @@ class GaussianDiffusion:
         for sample in self.ddim_reverse_sample_loop_progressive(
                 model,
                 image,
+                kernel,
                 clip_denoised=clip_denoised,
                 denoised_fn=denoised_fn,
                 cond_fn=cond_fn,
@@ -786,6 +796,7 @@ class GaussianDiffusion:
                 use_wandb=use_wandb,
                 directory=directory,
                 debug_mode=debug_mode,
+                norm=norm,
         ):
             final = sample
 
@@ -797,6 +808,7 @@ class GaussianDiffusion:
             self,
             model,
             image,
+            kernel,
             clip_denoised=True,
             denoised_fn=None,
             cond_fn=None,
@@ -808,6 +820,7 @@ class GaussianDiffusion:
             use_wandb=False,
             directory=None,
             debug_mode=False,
+            norm=None,
     ):
         """
         XS: Use DDIM to perform encoding / inference, until isotropic Gaussian.
@@ -816,9 +829,14 @@ class GaussianDiffusion:
             device = next(model.parameters()).device
         
         image_blur = image
-        ori_blur = original_image
+        image_deblur = image.clone().detach()
+        ori_sharp = original_image
         shape = image.shape
         indices = list(range(self.num_timesteps))
+
+        norm_loss = norm['loss']
+        norm_img = norm['img']
+        reg_scale = norm['reg_scale']
 
         if progress:
             # Lazy import so that we don't depend on tqdm.
@@ -828,6 +846,7 @@ class GaussianDiffusion:
         
         for i in indices:
             t = th.tensor([i] * shape[0], device=device)
+            image_blur = image_blur.requires_grad_()
 
             out_blur = self.ddim_reverse_sample(
                 model,
@@ -840,29 +859,37 @@ class GaussianDiffusion:
                 eta=eta,
             )
             yield out_blur
-            image_blur = out_blur["sample"]
 
-            # Check Gradient
+            img_t = out_blur["sample"]
+            img_0hat = out_blur["pred_xstart"]
+            loss_blur = get_loss(image_deblur, img_0hat)
+         
+            diff = th.linalg.norm(img_0hat - image_blur)
+            # L_k = loss_blur['lpips'] + diff * norm_img # debugstep1
+            L_k = loss_blur['lpips'] * norm_loss
+            norm_grad = th.autograd.grad(outputs=L_k, inputs=[image_blur])
+            img_t -= norm_grad[0] * reg_scale
+            image_blur = img_t.detach_()
 
-            for param in model.parameters():
-                if param.grad != None:
-                    print('DM:', param.grad[:10])
-                    break
-            for param in model.parameters():
-                if param.grad != None:
-                    print('Image:', param.grad[:10])
-                    break
-
-
-            loss_blur = get_loss(ori_blur, out_blur["pred_xstart"])
+            psnr, ssim = 0.0, 0.0
+            for idx in range(ori_sharp.shape[0]):
+                restored = th.clamp(img_0hat[idx], -1., 1.).cpu().detach().numpy()
+                target = th.clamp(ori_sharp[idx], -1., 1.).cpu().detach().numpy()
+                ps = psnr_loss(restored, target)
+                ss = ssim_loss(restored, target, data_range=2.0, multichannel=True, channel_axis=0)
+                psnr += ps
+                ssim += ss
+                print(f"[PSNR]: %.4f, [SSIM]: %.4f"% (ps, ss)+'\n')
+            psnr /= ori_sharp.shape[0]
+            ssim /=ori_sharp.shape[0]
 
             if use_wandb:
-                wandb_log = {'enc_blur_LPIPS': loss_blur['lpips'], 'enc_blur_L2': loss_blur['l2']}
+                wandb_log = {'enc_blur_LPIPS': loss_blur['lpips'], 'enc_blur_L2': loss_blur['l2'], \
+                             'enc_psnr_x0hat': psnr, 'enc_ssim_x0hat': ssim}
                 wandb.log(wandb_log)
             if i % 100 == 0:
-                vtils.save_image(out_blur["pred_xstart"], f'{directory}blur_x_0_hat_step{i}.png', range=(-1,1), normalize=True)
-            if i % 100 == 0:
-                vtils.save_image(out_blur["sample"], f'{directory}blur_x_t_step{i}.png', range=(-1,1), normalize=True)
+                vtils.save_image(out_blur["pred_xstart"], f'{directory}deblur_x_0_hat_step{i}.png', range=(-1,1), normalize=True)
+                vtils.save_image(out_blur["sample"], f'{directory}deblur_x_t_step{i}.png', range=(-1,1), normalize=True)
 
             if debug_mode:
                 break
@@ -1051,7 +1078,7 @@ class GaussianDiffusion:
             "xstart_mse": xstart_mse,
             "mse": mse,
         }
-
+    
 
 
 def _extract_into_tensor(arr, timesteps, broadcast_shape):
