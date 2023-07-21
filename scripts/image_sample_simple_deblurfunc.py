@@ -35,7 +35,7 @@ from skimage import img_as_float32, img_as_ubyte
 from skimage.metrics import peak_signal_noise_ratio as psnr_loss
 from skimage.metrics import structural_similarity as ssim_loss
 from motionblur.motionblur import Kernel
-from kernel_utils.deblurfunc import BlindBlurOperator
+from kernel_utils.deblurfunc import BlindBlurOperator, ToyDeblurFunc
 
 from guided_diffusion.script_util_gradient import(
 # from guided_diffusion.script_util import(
@@ -66,10 +66,10 @@ def main():
 
     # set save directory
     args.ori_logsuffix = args.log_suffix
-    args.log_suffix = f'k_{args.kernel}_{args.log_suffix}'
+    args.log_suffix = f'toyver{args.toyver}_{args.toy_exp}_GT{args.gt}_{args.log_suffix}'
     data_name = args.data_dir.split('/')[-2]
-    # args.log_suffix = f'{args.log_suffix}/{data_name}_normL{args.norm_loss}_img{args.norm_img}_reg{args.reg_scale}'
-    args.log_suffix = f'{args.log_suffix}/{data_name}_normL{args.norm_loss}_reg{args.reg_scale}'
+    args.log_suffix = f'{args.log_suffix}/{data_name}_normL{args.norm_loss}_img{args.norm_img}_reg{args.reg_scale}'
+    # args.log_suffix = f'{args.log_suffix}/{data_name}_normL{args.norm_loss}_reg{args.reg_scale}'
 
     args.log_dir = os.path.join(args.log_dir, args.log_suffix)
     args.log_suffix = '_' + args.log_suffix
@@ -111,30 +111,28 @@ def main():
         model.convert_to_fp16()
     model.eval()
 
-        
     if args.sampler == "multistep":
         assert len(args.ts) > 0
         ts = tuple(int(x) for x in args.ts.split(","))
     else:
         ts = None
 
-    # kernel_size = data_dir.split('/')[-2] # gaussiankernel4_intensity0.1
-    # Load Deblur model
-    # if args.kernel == 'motion':
-    #     operator = MotionBlurOperator(kernel_size=args.kernel_size, device=dist_util.dev(), intensity=args.intensity)
-    # elif args.kernel == 'gaussian':
-    #     operator = GaussianBlurOperator(kernel_size=args.kernel_size, device=dist_util.dev(), intensity=args.intensity)
-    # elif args.kernel == 'randominit':
-    #     operator = DeblurOperator(kernel_size=args.kernel_size, device=dist_util.dev())
-    # else:
-    #     raise NotImplementedError("Kernel type is not specified")
-    
-    if args.kernel == 'blind_blur':
-        operator = BlindBlurOperator(device=dist_util.dev())    
-    elif args.kernel == 'gaussian_deblur':
-        operator = GaussianDeblurOperator(kernel_size=args.kernel_size, device=dist_util.dev(), intensity=args.intensity)
+    # Load Simple Deblur kernel
+    deblur_model = ToyDeblurFunc(args)
+    if args.n_feats == 256:
+        args.deblur_model_path = './results_toy/toy230718_train_deblurfunc/8img_7conv_lr2e-03_lpips/gaussiankernel16_intensity0.1/model_ep0_iter4000.pth'
+    elif args.n_feats == 512:
+        args.deblur_model_path = './results_toy/toy230718_train_deblurfunc/8img_7conv_512feat_lr2e-03_lpips_gaussianker16/gaussiankernel8_intensity0.1/model_ep0_iter1000.pth'
+    elif args.n_feats == 768:
+        args.deblur_model_path = 'results_toy/toy230718_train_deblurfunc/8img_7conv_768feat_lr2e-03_lpips_gaussianker16/gaussiankernel8_intensity0.1/model_ep0_iter1000.pth'
+    elif args.n_feats == 1024:
+        args.deblur_model_path = './results_toy/toy230718_train_deblurfunc/8img_7conv_1024feat_lr2e-03_lpips_gaussianker16/gaussiankernel8_intensity0.1/model_ep0_iter1000.pth'
 
-    rand_kernel = th.randn((1,1,args.kernel_size,args.kernel_size), device=dist_util.dev()) * 0.01
+    deblur_model.load_state_dict(
+            dist_util.load_state_dict(args.deblur_model_path, map_location="cpu")['state_dict']
+        )
+    deblur_model.to(dist_util.dev())
+    deblur_model.eval()
 
     if args.use_wandb:
         import wandb
@@ -152,6 +150,7 @@ def main():
         batch_size=args.batch_size,
         image_size=args.image_size,
         class_cond=args.class_cond,
+        is_toy=True
     )
 
     best_psnr = 0.0
@@ -172,39 +171,23 @@ def main():
                 vtils.save_image(ori_sharp, f'{save_dir}/Ori_sharp_{epoch}_{i}.png', range=(-1,1), normalize=True)
                 vtils.save_image(x_blur, f'{save_dir}/Ori_blur_{epoch}_{i}.png', range=(-1,1), normalize=True)
 
-            ori_blur = x_blur.detach().clone()
+            if args.gt == 'deblur':
+                x_restored = deblur_model(x_blur)
+            elif args.gt == 'cleanGT':
+                x_restored = ori_sharp # init
+            elif args.gt == 'blurGT':
+                x_restored = x_blur # init
 
-            # x_blur = x_blur.requires_grad_()
-            rand_kernel = rand_kernel.requires_grad_()
-            rand_kernel = rand_kernel.clamp(-1., 1.)
-            # kernel = repeat(rand_kernel, '1 h w -> c 1 h w', c=3)
-            kernel = (rand_kernel + 1.0) / 2.0
-            kernel /= kernel.sum()
+            vtils.save_image(x_restored, f'{save_dir}/x_restored_images{i}.png', range=(-1,1), normalize=True)
+            
+            if args.toyver == 3:
+                x_restored = [ori_sharp, x_restored]
 
-            # 1. Get Deblurred image y' from f_\psi (kernel)
-            if args.batch_size > 1:
-                temp_restored = []
-                for batch_idx in range(args.batch_size):
-                    temp_restored.append(operator.forward(x_blur[batch_idx].unsqueeze(0), kernel[0].unsqueeze(0)))
-                x_restored = th.cat(temp_restored, dim=0)
-                vtils.save_image(x_restored[0], f'{save_dir}/x_restored_images{i}.png', range=(-1,1), normalize=True)
-
-            else:
-                if args.kernel == 'blind_blur':
-                    x_restored = operator.forward(x_blur, kernel)
-                    x_restored2 = operator.forward(ori_sharp, kernel)
-                # elif args.kernel == "gaussian_deblur":
-                #     x_restored = operator.forward(x_blur)
-                #     x_restored2 = operator.forward(ori_sharp)
-                vtils.save_image(x_restored, f'{save_dir}/x_restored_images{i}.png', range=(-1,1), normalize=True)
-                vtils.save_image(x_restored2, f'{save_dir}/x_orisharp_images{i}.png', range=(-1,1), normalize=True)
-            rand_kernel = (kernel * 2.0) - 1.0
             # 2. Encoding from y' to y_t
             logger.log("encoding the source images.")
             noise_restored = diffusion.ddim_reverse_sample_loop(
                 model,
                 image=x_restored,
-                kernel=rand_kernel,
                 original_image=ori_sharp,
                 clip_denoised=True,
                 device=dist_util.dev(),
@@ -213,6 +196,7 @@ def main():
                 directory=forward_dir,
                 debug_mode=args.debug_mode,
                 norm=norm_dict,
+                toyver=args.toyver
             )
             if epoch == 0 and i == 0:
                 vtils.save_image(noise_restored, f'{save_dir}/Ori_restored_ddim_noise.png', range=(-1,1), normalize=True)
@@ -237,6 +221,10 @@ def main():
 
             # y^prime = x_restored
             # y^prime_0,t = sample_restored
+            if args.toyver == 3:
+                if i == 7: return
+                else:
+                    continue
             l2_loss = (x_restored - sample_restored) ** 2
             l2_loss = mean_flat(l2_loss) # * weights
             l2_loss = l2_loss.mean()
@@ -250,8 +238,6 @@ def main():
                 loss = lpips_loss
             else:
                 raise NotImplementedError()
-            
-            # loss_scaler(loss, optimizer, parameters=kernel.parameters())
 
             epoch_loss_dict['epoch_loss'] += loss.item()
             epoch_loss_dict['lpips_loss'] += lpips_loss.item()
@@ -281,9 +267,9 @@ def main():
                 print(results)
                 f.write(results)
 
-            if args.debug_mode and i ==1: break
+            if args.debug_mode and i ==0: return
 
-            if i == 1: return
+            if i == 7: return
         epoch_psnr = sum(psnr_rgb)/len(psnr_rgb)
         epoch_ssim = sum(ssim_rgb)/len(ssim_rgb)
 
@@ -311,7 +297,7 @@ def main():
 
         if args.debug_mode and epoch==1: break
 
-        torch.save({'epoch': epoch,'state_dict': kernel.state_dict(),}, os.path.join(save_dir, "model_last.pth"))
+        # torch.save({'epoch': epoch,'state_dict': kernel.state_dict(),}, os.path.join(save_dir, "model_last.pth"))
 
     logger.log("Completed")
 
@@ -331,28 +317,6 @@ def create_argparser():
         s_tmax=float("inf"),
         s_noise=1.0,
         steps=1000,
-        
-        norm_img=0.01,
-        norm_loss=0.01,
-        reg_scale=0.01,
-
-        # norm_loss=0.1,
-        # reg_scale=0.1,
-
-        # norm_loss=0.05,
-        # reg_scale=0.1,
-
-        # norm_loss=0.1,
-        # reg_scale=0.05,
-
-        # norm_loss=0.05,
-        # reg_scale=0.05,
-
-        # norm_loss=0.01,
-        # reg_scale=0.05,
-
-        # norm_loss=0.05,
-        # reg_scale=0.01,
 
         lr_initial=2e-03, 
         
@@ -384,17 +348,26 @@ def create_argparser():
     parser = argparse.ArgumentParser()
     
     parser.add_argument('--gpu', type=str, default='6')
+
     # parser.add_argument('--log_dir', type=str, default='/hub_data1/sojin/sampling_results/')
     parser.add_argument('--log_dir', type=str, default='./results_toy/deblurfunc_debug')
-    # parser.add_argument('--log_dir', type=str, default='./results_toy/toy230718_noUpdateDeblurFunc/DeblurToy_AFHQ_Cat')
+    # parser.add_argument('--log_dir', type=str, default='./results_toy/toy230720_toyver1/DeblurToy_AFHQ_Cat')
     # parser.add_argument('--log_dir', type=str, default='./toy230718/DeblurToy_GoPro')
     # parser.add_argument('--log_dir', type=str, default='./results_toy/toy230718/DeblurToy_FFHQ_1K')
     parser.add_argument('--loss', type=str, default='lpips') # lpips, l2
-    parser.add_argument('--toy_exp', type=str, default='toy230718_noUpdateDeblurFunc')
+    parser.add_argument('--toy_exp', type=str, default='toy230720_ApplyDeblurKernel')
     parser.add_argument('-log','--log_suffix', type=str, required=True) # Experiment name, starts with tb(tesorboard) ->  tb_exp1
     # parser.add_argument('--use_wandb', type=bool, default=False)
     parser.add_argument('--use_wandb', action='store_true', default=False)
     parser.add_argument('--debug_mode', action='store_true', default=False)
+    parser.add_argument('--n_feats', type=int, default=512)
+    parser.add_argument('--toyver', type=int, default=3)
+
+    parser.add_argument('--norm_img', type=float, default=0.01) 
+    parser.add_argument('--norm_loss', type=float, default=0.01) 
+    parser.add_argument('--reg_scale', type=float, default=0.01) 
+    parser.add_argument('--gt', type=str, default='deblur') 
+
 
     add_dict_to_argparser(parser, defaults)
     return parser

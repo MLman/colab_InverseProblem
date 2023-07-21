@@ -18,6 +18,7 @@ def load_data_pairs(
     deterministic=False,
     random_crop=False,
     random_flip=True,
+    is_toy=False,
 ):
     """
     For a dataset, create a generator over (images, kwargs) pairs.
@@ -46,6 +47,11 @@ def load_data_pairs(
     # blur_dir = os.path.join(data_dir, "input")
     all_sharp_files = _list_image_files_recursively(sharp_dir)
     all_blur_files = _list_image_files_recursively(blur_dir)
+
+    if is_toy:
+        all_sharp_files = all_sharp_files[:8]
+        all_blur_files = all_blur_files[:8]
+            
     assert len(all_sharp_files) == len(all_blur_files)
 
     classes = None

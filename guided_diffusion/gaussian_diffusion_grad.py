@@ -763,8 +763,9 @@ class GaussianDiffusion:
             self,
             model,
             image,
-            kernel,
             original_image,
+            toyver,
+            kernel=None,
             clip_denoised=True,
             denoised_fn=None,
             cond_fn=None,
@@ -775,40 +776,82 @@ class GaussianDiffusion:
             use_wandb=False,
             directory=None,
             debug_mode=False,
-            norm=None
+            norm=None,
     ):
         """
         XS: Encode image into latent using DDIM ODE.
         """
         final = None
-        for sample in self.ddim_reverse_sample_loop_progressive(
-                model,
-                image,
-                kernel,
-                clip_denoised=clip_denoised,
-                denoised_fn=denoised_fn,
-                cond_fn=cond_fn,
-                model_kwargs=model_kwargs,
-                device=device,
-                progress=progress,
-                eta=eta,
-                original_image=original_image,
-                use_wandb=use_wandb,
-                directory=directory,
-                debug_mode=debug_mode,
-                norm=norm,
-        ):
-            final = sample
+
+        if toyver == 1:
+            for sample in self.ddim_reverse_sample_loop_progressive_ver1(
+                    model,
+                    image,
+                    kernel,
+                    clip_denoised=clip_denoised,
+                    denoised_fn=denoised_fn,
+                    cond_fn=cond_fn,
+                    model_kwargs=model_kwargs,
+                    device=device,
+                    progress=progress,
+                    eta=eta,
+                    original_image=original_image,
+                    use_wandb=use_wandb,
+                    directory=directory,
+                    debug_mode=debug_mode,
+                    norm=norm,
+            ):
+                final = sample
+
+        elif toyver == 2:
+            for sample in self.ddim_reverse_sample_loop_progressive_ver2(
+                    model,
+                    image,
+                    kernel,
+                    clip_denoised=clip_denoised,
+                    denoised_fn=denoised_fn,
+                    cond_fn=cond_fn,
+                    model_kwargs=model_kwargs,
+                    device=device,
+                    progress=progress,
+                    eta=eta,
+                    original_image=original_image,
+                    use_wandb=use_wandb,
+                    directory=directory,
+                    debug_mode=debug_mode,
+                    norm=norm,
+            ):
+                final = sample
+
+        elif toyver == 3:
+            for sample in self.ddim_reverse_sample_loop_progressive_ver3(
+                    model,
+                    image,
+                    kernel,
+                    clip_denoised=clip_denoised,
+                    denoised_fn=denoised_fn,
+                    cond_fn=cond_fn,
+                    model_kwargs=model_kwargs,
+                    device=device,
+                    progress=progress,
+                    eta=eta,
+                    original_image=original_image,
+                    use_wandb=use_wandb,
+                    directory=directory,
+                    debug_mode=debug_mode,
+                    norm=norm,
+            ):
+                final = sample
 
         final_blur = final["sample"]
 
         return final_blur
 
-    def ddim_reverse_sample_loop_progressive(
+    def ddim_reverse_sample_loop_progressive_ver1( # ver 1
             self,
             model,
             image,
-            kernel,
+            kernel=None,
             clip_denoised=True,
             denoised_fn=None,
             cond_fn=None,
@@ -847,6 +890,224 @@ class GaussianDiffusion:
         for i in indices:
             t = th.tensor([i] * shape[0], device=device)
             image_blur = image_blur.requires_grad_()
+ 
+            time_scale = th.from_numpy(self.sqrt_alphas_cumprod).to(device)[int(self._scale_timesteps(i))].float()
+            
+            out_blur = self.ddim_reverse_sample(
+                model,
+                image_blur,
+                t,
+                clip_denoised=clip_denoised,
+                denoised_fn=denoised_fn,
+                cond_fn=cond_fn,
+                model_kwargs=model_kwargs,
+                eta=eta,
+            )
+            yield out_blur
+
+            img_t = out_blur["sample"] 
+            img_0hat = out_blur["pred_xstart"] 
+            loss_blur = get_loss(image_deblur, img_0hat) 
+         
+            # diff = th.linalg.norm(img_0hat - image_blur)
+            # L_k = loss_blur['lpips'] + diff * norm_img # debugstep1
+
+
+            # ver 1
+            L_k = loss_blur['lpips'] * norm_loss 
+            norm_grad = th.autograd.grad(outputs=L_k, inputs=[image_blur]) 
+            img_t -= norm_grad[0] * time_scale
+            image_blur = img_t.detach_()
+
+            
+            psnr, ssim = 0.0, 0.0
+            for idx in range(ori_sharp.shape[0]):
+                restored = th.clamp(img_0hat[idx], -1., 1.).cpu().detach().numpy()
+                target = th.clamp(ori_sharp[idx], -1., 1.).cpu().detach().numpy()
+                ps = psnr_loss(restored, target)
+                ss = ssim_loss(restored, target, data_range=2.0, multichannel=True, channel_axis=0)
+                psnr += ps
+                ssim += ss
+                print(f"[PSNR]: %.4f, [SSIM]: %.4f"% (ps, ss)+'\n')
+            psnr /= ori_sharp.shape[0]
+            ssim /=ori_sharp.shape[0]
+
+            if use_wandb:
+                wandb_log = {'enc_blur_LPIPS': loss_blur['lpips'], 'enc_blur_L2': loss_blur['l2'], \
+                             'enc_psnr_x0hat': psnr, 'enc_ssim_x0hat': ssim}
+                wandb.log(wandb_log)
+            if i % 100 == 0:
+                vtils.save_image(out_blur["pred_xstart"], f'{directory}deblur_x_0_hat_step{i}.png', range=(-1,1), normalize=True)
+                vtils.save_image(out_blur["sample"], f'{directory}deblur_x_t_step{i}.png', range=(-1,1), normalize=True)
+
+            if debug_mode:
+                break
+
+    def ddim_reverse_sample_loop_progressive_ver2( # ver 2
+            self,
+            model,
+            image,
+            kernel=None,
+            clip_denoised=True,
+            denoised_fn=None,
+            cond_fn=None,
+            model_kwargs=None,
+            device=None,
+            progress=False,
+            eta=0.0,
+            original_image=None,
+            use_wandb=False,
+            directory=None,
+            debug_mode=False,
+            norm=None,
+    ):
+        """
+        XS: Use DDIM to perform encoding / inference, until isotropic Gaussian.
+        """
+        if device is None:
+            device = next(model.parameters()).device
+        
+        image_blur = image
+        image_deblur = image.clone().detach()
+        ori_sharp = original_image
+        shape = image.shape
+        indices = list(range(self.num_timesteps))
+
+        norm_loss = norm['loss']
+        norm_img = norm['img']
+        reg_scale = norm['reg_scale']
+
+        if progress:
+            # Lazy import so that we don't depend on tqdm.
+            from tqdm.auto import tqdm
+
+            indices = tqdm(indices)
+        
+        for i in indices:
+            t = th.tensor([i] * shape[0], device=device)
+            image_blur = image_blur.requires_grad_()
+ 
+            time_scale = th.from_numpy(self.sqrt_alphas_cumprod).to(device)[int(self._scale_timesteps(i))].float()
+            
+            out_blur = self.ddim_reverse_sample(
+                model,
+                image_blur,
+                t,
+                clip_denoised=clip_denoised,
+                denoised_fn=denoised_fn,
+                cond_fn=cond_fn,
+                model_kwargs=model_kwargs,
+                eta=eta,
+            )
+
+            img_t = out_blur["sample"] 
+            img_0hat = out_blur["pred_xstart"] 
+            yield out_blur
+
+            if i > 0:
+                t_im1 = th.tensor([i-1] * shape[0], device=device)
+                out_blur_i = out_blur["sample"].detach().clone()
+                out_blur_im1 = self.ddim_sample(
+                    model,
+                    out_blur_i,
+                    t_im1,
+                    clip_denoised=clip_denoised,
+                    denoised_fn=denoised_fn,
+                    cond_fn=cond_fn,
+                    model_kwargs=model_kwargs,
+                    eta=eta,
+                )
+                diff = th.linalg.norm(out_blur_im1["sample"]-image_blur)
+                # reg = th.linalg.norm(out_blur_im1["pred_xstart"]-img_0hat)
+
+                L_k = diff * norm_img
+                # L_k = diff * norm_img + reg * reg_scale # X
+                norm_grad = th.autograd.grad(outputs=L_k, inputs=[image_blur]) 
+                # img_t -= norm_grad[0]
+                img_t -= norm_grad[0] * time_scale
+
+            image_blur = img_t.detach_()
+         
+            
+            psnr, ssim = 0.0, 0.0
+            for idx in range(ori_sharp.shape[0]):
+                restored = th.clamp(img_0hat[idx], -1., 1.).cpu().detach().numpy()
+                target = th.clamp(ori_sharp[idx], -1., 1.).cpu().detach().numpy()
+                ps = psnr_loss(restored, target)
+                ss = ssim_loss(restored, target, data_range=2.0, multichannel=True, channel_axis=0)
+                psnr += ps
+                ssim += ss
+                print(f"[PSNR]: %.4f, [SSIM]: %.4f"% (ps, ss)+'\n')
+            psnr /= ori_sharp.shape[0]
+            ssim /=ori_sharp.shape[0]
+
+            if use_wandb:
+                wandb_log = {'enc_blur_LPIPS': loss_blur['lpips'], 'enc_blur_L2': loss_blur['l2'], \
+                             'enc_psnr_x0hat': psnr, 'enc_ssim_x0hat': ssim}
+                wandb.log(wandb_log)
+            if i % 100 == 0:
+                vtils.save_image(out_blur["pred_xstart"], f'{directory}deblur_x_0_hat_step{i}.png', range=(-1,1), normalize=True)
+                vtils.save_image(out_blur["sample"], f'{directory}deblur_x_t_step{i}.png', range=(-1,1), normalize=True)
+
+            if debug_mode:
+                break
+
+
+    def ddim_reverse_sample_loop_progressive_ver3( # ver 3
+            self,
+            model,
+            image,
+            kernel=None,
+            clip_denoised=True,
+            denoised_fn=None,
+            cond_fn=None,
+            model_kwargs=None,
+            device=None,
+            progress=False,
+            eta=0.0,
+            original_image=None,
+            use_wandb=False,
+            directory=None,
+            debug_mode=False,
+            norm=None,
+    ):
+        """
+        XS: Use DDIM to perform encoding / inference, until isotropic Gaussian.
+        """
+        if device is None:
+            device = next(model.parameters()).device
+ 
+        image_sharp, image_blur = image[0], image[1]
+  
+        ori_sharp = original_image
+        shape = image[0].shape
+        indices = list(range(self.num_timesteps))
+
+        norm_loss = norm['loss']
+ 
+        if progress:
+            # Lazy import so that we don't depend on tqdm.
+            from tqdm.auto import tqdm
+
+            indices = tqdm(indices)
+        
+        for i in indices:
+            t = th.tensor([i] * shape[0], device=device)
+            image_blur = image_blur.requires_grad_()
+ 
+            time_scale = th.from_numpy(self.sqrt_alphas_cumprod).to(device)[int(self._scale_timesteps(i))].float()
+            
+            out_sharp = self.ddim_reverse_sample(
+                model,
+                image_sharp,
+                t,
+                clip_denoised=clip_denoised,
+                denoised_fn=denoised_fn,
+                cond_fn=cond_fn,
+                model_kwargs=model_kwargs,
+                eta=eta,
+            )
+            img_t_sharp = out_sharp["sample"]
 
             out_blur = self.ddim_reverse_sample(
                 model,
@@ -860,17 +1121,24 @@ class GaussianDiffusion:
             )
             yield out_blur
 
-            img_t = out_blur["sample"]
-            img_0hat = out_blur["pred_xstart"]
-            loss_blur = get_loss(image_deblur, img_0hat)
+
+            img_t = out_blur["sample"] 
+            img_0hat = out_blur["pred_xstart"] 
+            loss_blur = get_loss(img_t_sharp, img_t) 
          
-            diff = th.linalg.norm(img_0hat - image_blur)
+            diff = th.linalg.norm(img_t_sharp - img_t)
             # L_k = loss_blur['lpips'] + diff * norm_img # debugstep1
-            L_k = loss_blur['lpips'] * norm_loss
-            norm_grad = th.autograd.grad(outputs=L_k, inputs=[image_blur])
-            img_t -= norm_grad[0] * reg_scale
+
+
+            # ver 3
+            # L_k = loss_blur['l2'] * norm_loss 
+            L_k = loss_blur['lpips'] * norm_loss # 3개 다 결과 비슷. 일단 lpips로 실험
+            # L_k = diff * norm_loss 
+            norm_grad = th.autograd.grad(outputs=L_k, inputs=[image_blur]) 
+            img_t -= norm_grad[0] * time_scale
             image_blur = img_t.detach_()
 
+            
             psnr, ssim = 0.0, 0.0
             for idx in range(ori_sharp.shape[0]):
                 restored = th.clamp(img_0hat[idx], -1., 1.).cpu().detach().numpy()
