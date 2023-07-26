@@ -99,6 +99,7 @@ def main():
         batch_size=args.batch_size,
         image_size=args.image_size,
         class_cond=args.class_cond,
+        is_toy=True,
     )
 
     set_random_seed(args.seed)
@@ -149,7 +150,7 @@ def main():
         vtils.save_image(sample_sharp, f'{save_dir}/Recon_sharp{i}.png', range=(-1,1), normalize=True)
         vtils.save_image(sample_blur, f'{save_dir}/Recon_blur{i}.png', range=(-1,1), normalize=True)
 
-        break
+        
 
     logger.log("Completed")
 
@@ -162,7 +163,7 @@ def create_argparser():
         schedule_sampler="lognormal", 
         clip_denoised=True,
         num_samples=1000,
-        batch_size=16,
+        batch_size=1,
         sampler="heun",
         s_churn=0.0,
         s_tmin=0.0,
@@ -178,8 +179,8 @@ def create_argparser():
         # seed=42,
         # seed=1234,
 
-        # data_dir="/hub_data1/sojin/ffhq_1K_motionblur",
-        # model_path="./models/ffhq_1k/ffhq_10m.pt",
+        data_dir="/hub_data1/sojin/ffhq_1K_motionblur",
+        model_path="./models/ffhq_1k/ffhq_10m.pt",
         seed=42,
         # seed=1234,
 
@@ -192,14 +193,15 @@ def create_argparser():
     
     parser.add_argument('--gpu', type=str, default='0')
     # parser.add_argument('--log_dir', type=str, default='/hub_data1/sojin/sampling_results/')
-    parser.add_argument('--log_dir', type=str, default='./toy230629_ImageNet/afhqcat_')
+    # parser.add_argument('--log_dir', type=str, default='./toy230629_ImageNet/afhqcat_')
+    parser.add_argument('--log_dir', type=str, default='./results_toy/toy230724_FFHQ_oriDDIM')
     # parser.add_argument('--log_dir', type=str, default='./toy230629/AFHQ_Cat')
     # parser.add_argument('--log_dir', type=str, default='./toy230629/GoPro')
     # parser.add_argument('--log_dir', type=str, default='./toy230629/FFHQ_1K')
     parser.add_argument('--toy_exp', type=str, default='ddim_reverse')
     # parser.add_argument('--toy_exp', type=str, default='None')
     parser.add_argument('-log','--log_suffix', type=str, required=True) # Experiment name, starts with tb(tesorboard) ->  tb_exp1
-    parser.add_argument('--use_wandb', type=bool, default=True) # Experiment name, starts with tb(tesorboard) ->  tb_exp1
+    parser.add_argument('--use_wandb', type=bool, default=False) # Experiment name, starts with tb(tesorboard) ->  tb_exp1
 
     add_dict_to_argparser(parser, defaults)
     return parser

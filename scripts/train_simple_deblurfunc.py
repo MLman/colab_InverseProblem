@@ -149,9 +149,11 @@ def main():
                 print(results)
                 f.write(results)
 
-            if i % 1000 == 0:
+            if i % 500 == 0:
                 th.save({'epoch': epoch,'state_dict': model.state_dict(),}, os.path.join(save_dir, f"model_ep{epoch}_iter{i}.pth"))
-
+            if i == 3000:
+                return
+            
         epoch_psnr = sum(psnr_rgb)/len(psnr_rgb)
         epoch_ssim = sum(ssim_rgb)/len(ssim_rgb)
 
@@ -186,7 +188,7 @@ def create_argparser():
 
     parser = argparse.ArgumentParser()
     
-    parser.add_argument('--lr_initial', type=float, default=2e-02)
+    parser.add_argument('--lr_initial', type=float, default=2e-03)
     parser.add_argument('--weight_decay', type=float, default=2e-02)
     parser.add_argument('--epoch', type=int, default=100)
     parser.add_argument('--batch_size', type=int, default=8)
@@ -197,13 +199,14 @@ def create_argparser():
     parser.add_argument('--rgb_range', type=int, default=255)
     parser.add_argument('--kernel_size', type=int, default=3)
     # parser.add_argument('--data_dir', type=str, default='./easy_blur/gaussiankernel16_intensity0.1/blind_blur')
-    parser.add_argument('--data_dir', type=str, default='./easy_blur/gaussiankernel8_intensity0.1/blind_blur')
+    parser.add_argument('--data_dir', type=str, default='./easy_blur_ffhq/motionkernel8_intensity0.1/blind_blur')
     parser.add_argument('--resume_path', type=str, default='')
     parser.add_argument('--loss', type=str, default='lpips') # lpips, l2
 
 
     parser.add_argument('--gpu', type=str, default='6')
-    parser.add_argument('--log_dir', type=str, default='./results_toy/toy230718_train_deblurfunc')
+    parser.add_argument('--log_dir', type=str, default='./results_toy/debug')
+    # parser.add_argument('--log_dir', type=str, default='./results_toy/toy230718_train_deblurfunc')
     parser.add_argument('--toy_exp', type=str, default='toy230719_TrainDeblurFunc')
     parser.add_argument('-log','--log_suffix', type=str, required=True) 
 

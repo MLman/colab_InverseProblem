@@ -1,8 +1,8 @@
 import argparse
 import inspect
 
-from . import gaussian_diffusion_grad as gd
-from .respace_grad import SpacedDiffusion, space_timesteps
+from . import gaussian_diffusion_nonblind as gd
+from .respace_nonblind import SpacedDiffusion, space_timesteps
 from .unet import SuperResModel, UNetModel, EncoderUNetModel
 
 NUM_CLASSES = 1000

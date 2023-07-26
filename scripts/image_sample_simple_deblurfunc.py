@@ -99,6 +99,9 @@ def main():
     else:
         NotImplementedError()
 
+    diffusion_dict = {'diffusion_steps':args.diffusion_steps}
+    image_dict.update(diffusion_dict)
+
     model, diffusion = create_model_and_diffusion(
         **image_dict,
     )
@@ -119,14 +122,15 @@ def main():
 
     # Load Simple Deblur kernel
     deblur_model = ToyDeblurFunc(args)
-    if args.n_feats == 256:
-        args.deblur_model_path = './results_toy/toy230718_train_deblurfunc/8img_7conv_lr2e-03_lpips/gaussiankernel16_intensity0.1/model_ep0_iter4000.pth'
-    elif args.n_feats == 512:
-        args.deblur_model_path = './results_toy/toy230718_train_deblurfunc/8img_7conv_512feat_lr2e-03_lpips_gaussianker16/gaussiankernel8_intensity0.1/model_ep0_iter1000.pth'
-    elif args.n_feats == 768:
-        args.deblur_model_path = 'results_toy/toy230718_train_deblurfunc/8img_7conv_768feat_lr2e-03_lpips_gaussianker16/gaussiankernel8_intensity0.1/model_ep0_iter1000.pth'
-    elif args.n_feats == 1024:
-        args.deblur_model_path = './results_toy/toy230718_train_deblurfunc/8img_7conv_1024feat_lr2e-03_lpips_gaussianker16/gaussiankernel8_intensity0.1/model_ep0_iter1000.pth'
+    # 230721 Meeting Related Model ckpt
+    # if args.n_feats == 256:
+    #     args.deblur_model_path = './results_toy/toy230718_train_deblurfunc/8img_7conv_lr2e-03_lpips/gaussiankernel16_intensity0.1/model_ep0_iter4000.pth'
+    # elif args.n_feats == 512:
+    #     args.deblur_model_path = './results_toy/toy230718_train_deblurfunc/8img_7conv_512feat_lr2e-03_lpips_gaussianker16/gaussiankernel8_intensity0.1/model_ep0_iter1000.pth'
+    # elif args.n_feats == 768:
+    #     args.deblur_model_path = 'results_toy/toy230718_train_deblurfunc/8img_7conv_768feat_lr2e-03_lpips_gaussianker16/gaussiankernel8_intensity0.1/model_ep0_iter1000.pth'
+    # elif args.n_feats == 1024:
+    #     args.deblur_model_path = './results_toy/toy230718_train_deblurfunc/8img_7conv_1024feat_lr2e-03_lpips_gaussianker16/gaussiankernel8_intensity0.1/model_ep0_iter1000.pth'
 
     deblur_model.load_state_dict(
             dist_util.load_state_dict(args.deblur_model_path, map_location="cpu")['state_dict']
@@ -196,7 +200,8 @@ def main():
                 directory=forward_dir,
                 debug_mode=args.debug_mode,
                 norm=norm_dict,
-                toyver=args.toyver
+                toyver=args.toyver,
+                exp_name=args.exp_name
             )
             if epoch == 0 and i == 0:
                 vtils.save_image(noise_restored, f'{save_dir}/Ori_restored_ddim_noise.png', range=(-1,1), normalize=True)
@@ -330,8 +335,8 @@ def create_argparser():
         # kernel='gaussian_deblur',
         kernel_size=16,
         intensity=0.1,
-        data_dir="./easy_blur/gaussiankernel16_intensity0.1/blind_blur",
-        model_path="./models/afhqCat/guided_diffusion_afhqcat_ema_0.9999_625000.pt",
+        # data_dir="./easy_blur/gaussiankernel16_intensity0.1/blind_blur",
+        # model_path="./models/afhqCat/guided_diffusion_afhqcat_ema_0.9999_625000.pt",
         seed=42,
         # seed=1234,
 
@@ -348,20 +353,29 @@ def create_argparser():
     parser = argparse.ArgumentParser()
     
     parser.add_argument('--gpu', type=str, default='6')
+    parser.add_argument('--data_dir', type=str, default='./easy_blur/gaussiankernel16_intensity0.1/blind_blur')
 
-    # parser.add_argument('--log_dir', type=str, default='/hub_data1/sojin/sampling_results/')
     parser.add_argument('--log_dir', type=str, default='./results_toy/deblurfunc_debug')
     # parser.add_argument('--log_dir', type=str, default='./results_toy/toy230720_toyver1/DeblurToy_AFHQ_Cat')
     # parser.add_argument('--log_dir', type=str, default='./toy230718/DeblurToy_GoPro')
     # parser.add_argument('--log_dir', type=str, default='./results_toy/toy230718/DeblurToy_FFHQ_1K')
     parser.add_argument('--loss', type=str, default='lpips') # lpips, l2
-    parser.add_argument('--toy_exp', type=str, default='toy230720_ApplyDeblurKernel')
+    # parser.add_argument('--toy_exp', type=str, default='toy230720_ApplyDeblurKernel')
+    parser.add_argument('--toy_exp', type=str, default='toy230723')
     parser.add_argument('-log','--log_suffix', type=str, required=True) # Experiment name, starts with tb(tesorboard) ->  tb_exp1
-    # parser.add_argument('--use_wandb', type=bool, default=False)
+    parser.add_argument('--deblur_model_path', type=str, default='./results_toy/toy230722_train_deblurfunc/AFHQ/8img_7conv_256feat_lr2e-03_lpips_gaussiankernel16_intensity0.1/gaussiankernel16_intensity0.1/model_ep0_iter3000.pth')
+    parser.add_argument('--model_path', type=str, default='./models/afhqCat/guided_diffusion_afhqcat_ema_0.9999_625000.pt')
+
     parser.add_argument('--use_wandb', action='store_true', default=False)
     parser.add_argument('--debug_mode', action='store_true', default=False)
-    parser.add_argument('--n_feats', type=int, default=512)
-    parser.add_argument('--toyver', type=int, default=3)
+    parser.add_argument('--n_feats', type=int, default=256)
+    parser.add_argument('--toyver', type=int, default=2)
+    parser.add_argument('--diffusion_steps', type=int, default=1000)
+    
+    # parser.add_argument('--exp_name', type=str, default='A1')
+    # parser.add_argument('--exp_name', type=str, default='A2')
+    # parser.add_argument('--exp_name', type=str, default='B1')
+    parser.add_argument('--exp_name', type=str, default='B2')
 
     parser.add_argument('--norm_img', type=float, default=0.01) 
     parser.add_argument('--norm_loss', type=float, default=0.01) 

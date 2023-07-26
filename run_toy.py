@@ -36,56 +36,49 @@ def str2list(s):
 
 parser = argparse.ArgumentParser(description="Baseline Reproduce")
 parser.add_argument('--gpus', default=[0, 1, 2, 3, 4, 5, 6, 7], type=str2list)
+parser.add_argument('--log_dir', type=str, default='./results_toy/0725_nonBlind_scale')
 
+# parser.add_argument('--exp_name', type=str, default='time')
+parser.add_argument('--exp_name', type=str2list, default=['reversed', 'exp'])
 
-parser.add_argument('--gpu', type=int, default=3)
-# parser.add_argument('--log_dir', type=str, default='./results_toy/toy230720_toyver1/DeblurToy_AFHQ_Cat')
-# parser.add_argument('--log_dir', type=str, default='./results_toy/toy230720_toyver2/DeblurToy_AFHQ_Cat')
-parser.add_argument('--log_dir', type=str, default='./results_toy/toy230720_toyver3/DeblurToy_AFHQ_Cat')
-parser.add_argument('--n_feats', type=int, default=512)
-parser.add_argument('--toyver', type=int, default=3)
+parser.add_argument('--diffusion_steps', type=int, default=['100','250','500','1000','2000'])
+parser.add_argument('--norm_loss', type=str2list, default=["1e-3", "1e-1", "1", "5", "20","1000"]) 
+parser.add_argument('--reg_scale', type=str2list, default=["1e-3", "1e-1", "1", "5", "20","1000"]) 
 
-# parser.add_argument('--norm_img', type=str2list, default=["0.01", "0.05", "0.1"]) # ver2
-# parser.add_argument('--norm_img', type=str2list, default=["0.01"]) 
-# parser.add_argument('--norm_img', type=str2list, default=["0.05"]) 
-# parser.add_argument('--norm_img', type=str2list, default=["0.01"]) 
-
-# parser.add_argument('--norm_loss', type=str2list, default=["0.1", "0.05", "0.01"])  # ver1,3
-# parser.add_argument('--norm_loss', type=str2list, default=["0.1"])  # ver1,3
-parser.add_argument('--norm_loss', type=str2list, default=["0.05"])  # ver1,3
-# parser.add_argument('--norm_loss', type=str2list, default=["0.01"])  # ver1,3
-
-
-# parser.add_argument('--reg_scale', type=str2list, default=["0.1"]) 
-# parser.add_argument('--reg_scale', type=str2list, default=["0.05"]) 
-# parser.add_argument('--reg_scale', type=str2list, default=["0.01"]) 
-# parser.add_argument('--gt', type=str2list, default=["deblur", "cleanGT", "blurGT"]) 
-parser.add_argument('--gt', type=str2list, default=["blurGT"]) # toy 3 -> only blurGT
 
 args = parser.parse_args()
-
-gpus = waitGPU(args.gpus, 120)
-print("Activate GPUS : ", gpus)
-
 
 sub_process_log = f'{args.log_dir}/run_command.txt'
 os.makedirs(args.log_dir, exist_ok=True)
 
+task_config_list = [
+    'configs/noise_0.05/gaussian_deblur_config.yaml', # OK
+    # 'configs/noise_0.05/inpainting_box_config.yaml', # OK
+    # 'configs/noise_0.05/inpainting_config.yaml',
+    'configs/noise_0.05/motion_deblur_config.yaml', # OK
+    # 'configs/noise_0.05/nonlinear_deblur_config.yaml',
+    # 'configs/noise_0.05/phase_retrieval_config.yaml',
+    # 'configs/noise_0.05/super_resolution_config.yaml', # OK
+]
 
-for norm_loss in args.norm_loss: # ver 1,3
-# for norm_img in args.norm_img: # ver 2
-    for gt in args.gt:
-        log_name = f'timescale_deblurFunc{args.n_feats}'
+for task_config in task_config_list:
+    task_name = task_config.split('/')[-1].split('_config')[0]
+    
+    for norm_loss in args.norm_loss: # ver 1
+        for reg_scale in args.reg_scale: # ver 1
+            for diffusion_steps in args.diffusion_steps:
+                for exp_name in args.exp_name:
+                    toyver = 1
+                    log_name = f'timescale_{exp_name}_toyver{toyver}_{task_name}/time{diffusion_steps}normL{norm_loss}_reg{reg_scale}'
 
-        # ver 1,3
-        script = f'python scripts/image_sample_simple_deblurfunc.py --n_feats {args.n_feats} --gt {gt} --norm_loss {norm_loss} --log_dir {args.log_dir} -log {log_name} --gpu {gpus[0]}'
-        
-        # ver 2
-        # script = f'python scripts/image_sample_simple_deblurfunc.py --n_feats {args.n_feats} --gt {gt} --norm_img {norm_img} --log_dir {args.log_dir} -log {log_name} --gpu {gpus[0]}'
+                    gpus = waitGPU(args.gpus, 120)
+                    print("Activate GPUS : ", gpus)
 
-        print(script)
-        f = open(sub_process_log, 'a')
-        f.write(script)
-        f.write('\n')
-        f.close()
-        subprocess.call(script, shell=True)
+                    script = f'python scripts/image_sample_nonblind.py --run --diffusion_steps {diffusion_steps} --toyver {toyver} --task_config {task_config} --exp_name {exp_name} --reg_scale {reg_scale} --norm_loss {norm_loss} --log_dir {args.log_dir} -log {log_name} --gpu {gpus[0]}'
+
+                    print(script)
+                    f = open(sub_process_log, 'a')
+                    f.write(script)
+                    f.write('\n')
+                    f.close()
+                    subprocess.call(script, shell=True) 

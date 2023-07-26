@@ -1,0 +1,17 @@
+conditioning:
+  method: ps
+  params:
+    scale: 1.0
+
+data:
+  name: ffhq
+  root: /hub_data2/sojin/ffhq_1K/
+
+measurement:
+  operator:
+    name: phase_retrieval
+    oversample: 2.0
+
+  noise: 
+    name: gaussian
+    sigma: 0.05
