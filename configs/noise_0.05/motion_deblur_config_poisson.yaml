@@ -10,7 +10,7 @@ data:
 measurement:
   operator:
     name: motion_blur
-    kernel_size: 61
+    kernel_size: 31
     intensity: 0.5
 
   noise: 

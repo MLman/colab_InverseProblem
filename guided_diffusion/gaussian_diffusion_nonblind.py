@@ -607,7 +607,6 @@ class GaussianDiffusion:
             shape,
             noise=None,
             original_image=None,
-            image_deblur=None,
             clip_denoised=True,
             denoised_fn=None,
             cond_fn=None,
@@ -618,6 +617,11 @@ class GaussianDiffusion:
             use_wandb=False,
             directory=None,
             debug_mode=False,
+            toyver=None,
+            norm=None,
+            measurement_cond_fn=None,
+            y0_measurement=None,
+            exp_name=None,
     ):
         """
         Generate samples from the model using DDIM.
@@ -629,7 +633,6 @@ class GaussianDiffusion:
                 model,
                 shape,
                 noise=noise,
-                image_deblur=image_deblur,
                 clip_denoised=clip_denoised,
                 denoised_fn=denoised_fn,
                 cond_fn=cond_fn,
@@ -641,6 +644,10 @@ class GaussianDiffusion:
                 use_wandb=use_wandb,
                 directory=directory,
                 debug_mode=debug_mode,
+                norm=norm,
+                measurement_cond_fn=measurement_cond_fn,
+                y0_measurement=y0_measurement,
+                exp_name=exp_name,
         ):
             final = sample
 
@@ -653,7 +660,6 @@ class GaussianDiffusion:
             model,
             shape,
             noise=None,
-            image_deblur=None,
             clip_denoised=True,
             denoised_fn=None,
             cond_fn=None,
@@ -665,6 +671,10 @@ class GaussianDiffusion:
             use_wandb=False,
             directory=None,
             debug_mode=False,
+            norm=None,
+            measurement_cond_fn=None,
+            y0_measurement=None,
+            exp_name=None,
     ):
         """
         Use DDIM to sample from the model and yield intermediate samples from
@@ -676,12 +686,20 @@ class GaussianDiffusion:
             device = next(model.parameters()).device
         assert isinstance(shape, (tuple, list))
         if noise is not None:
-            image_blur = noise
-            ori_blur = original_image
+            y_prev = noise
+            ori_cleanGT = original_image
         else:
             # img = th.randn(*shape, device=device)
             assert NotImplementedError
-        indices = list(range(self.num_timesteps))[::-1]
+
+        norm_loss = norm['loss']
+        reg_scale = norm['reg_scale']
+        early_stop_step = norm['early_stop']
+
+        if 'early_stop' in exp_name:
+            indices = list(range(early_stop_step))[::-1]
+        else:
+            indices = list(range(self.num_timesteps))[::-1]
 
         if progress:
             # Lazy import so that we don't depend on tqdm.
@@ -691,10 +709,35 @@ class GaussianDiffusion:
 
         for i in indices:
             t = th.tensor([i] * shape[0], device=device)
+            y_prev = y_prev.requires_grad_()
 
-            out_blur = self.ddim_sample(
+            if (exp_name is not None) and ("time" in exp_name): 
+                time_scale = th.from_numpy(self.sqrt_alphas_cumprod).to(device)[int(self._scale_timesteps(i))].float()
+            elif (exp_name is not None) and ("reversed" in exp_name):
+                time_idx = self.num_timesteps - i - 1
+                time_scale = th.from_numpy(self.sqrt_alphas_cumprod).to(device)[int(self._scale_timesteps(time_idx))].float()
+                time_scale *= reg_scale
+            elif (exp_name is not None) and ("exp" in exp_name):
+                if 'early_stop' in exp_name:
+                    m1 = early_stop_step
+                else:
+                    m1 = self.num_timesteps // 4
+                m2 = self.num_timesteps - m1
+                if i < m1:
+                    time_scale = np.exp(-((i-m1)**2)/reg_scale)
+                elif i < m2:
+                    time_scale = 1.0
+                else:
+                    time_scale = np.exp(-((i-m2)**2)/reg_scale)
+            else:
+                time_scale = 1.0
+            print(f"time_scale {time_scale}")
+                
+            reg_scale_cond = time_scale * norm_loss
+
+            yi = self.ddim_sample(
                 model,
-                image_blur,
+                y_prev,
                 t,
                 clip_denoised=clip_denoised,
                 denoised_fn=denoised_fn,
@@ -702,17 +745,37 @@ class GaussianDiffusion:
                 model_kwargs=model_kwargs,
                 eta=eta,
             )
-            yield out_blur
-            image_blur = out_blur["sample"]
-            loss_blur = get_loss(ori_blur, out_blur["pred_xstart"])
-            image_blur.detach_()
+            y_i_img_t = yi["sample"]
+            y_i_img_0hat = yi["pred_xstart"]
+            
+            loss_blur = get_loss(ori_cleanGT, y_i_img_0hat)
 
+            if 'condB' in exp_name: ## y=Hx
+                y_i_new_img_t, distance = measurement_cond_fn(x_t=y_i_img_t,
+                                                              measurement=y0_measurement, # y0
+                                                              noisy_measurement=None, # measurement y0에 forward
+                                                              x_prev=y_prev,
+                                                              x_0_hat=y_i_img_0hat,
+                                                              reg_scale=reg_scale_cond)
+                if 'no_gradB' in exp_name:
+                    y_i_updated_img_t = y_i_img_t - distance * reg_scale_cond
+                    # print("condB & no_gradB")
+                else:
+                    y_i_updated_img_t = y_i_new_img_t
+                    # print("only condB")
+            else:
+                y_i_updated_img_t = y_i_img_t
+                
+            y_prev = y_i_updated_img_t.detach_()
+            yi["sample"] = y_prev
+            yield yi
+            
             if use_wandb:
                 wandb_log = {'dec_blur_LPIPS': loss_blur['lpips'], 'dec_blur_L2': loss_blur['l2']}
                 wandb.log(wandb_log)
             if i % 100 == 0:
-                vtils.save_image(out_blur["pred_xstart"], f'{directory}_x_0_hat{i}.png', range=(-1,1), normalize=True)
-                vtils.save_image(out_blur["sample"], f'{directory}_x_t{i}.png', range=(-1,1), normalize=True)
+                vtils.save_image(y_i_img_0hat, f'{directory}_x_0_hat{i}.png', range=(-1,1), normalize=True)
+                vtils.save_image(y_i_img_t, f'{directory}_x_t{i}.png', range=(-1,1), normalize=True)
             
             if debug_mode:
                 break
@@ -828,29 +891,29 @@ class GaussianDiffusion:
                     exp_name=exp_name,
             ):
                 final = sample
-            final_blur = final
-            
-        elif toyver == 3:
-            for sample in self.ddim_reverse_sample_loop_progressive_ver3(
-                    model,
-                    image,
-                    clip_denoised=clip_denoised,
-                    denoised_fn=denoised_fn,
-                    cond_fn=cond_fn,
-                    model_kwargs=model_kwargs,
-                    device=device,
-                    progress=progress,
-                    eta=eta,
-                    original_image=original_image,
-                    use_wandb=use_wandb,
-                    directory=directory,
-                    debug_mode=debug_mode,
-                    norm=norm,
-                    measurement_cond_fn=measurement_cond_fn,
-                    exp_name=exp_name,
-            ):
-                final = sample
             final_blur = final["sample"]
+            
+        # elif toyver == 3:
+        #     for sample in self.ddim_reverse_sample_loop_progressive_ver3(
+        #             model,
+        #             image,
+        #             clip_denoised=clip_denoised,
+        #             denoised_fn=denoised_fn,
+        #             cond_fn=cond_fn,
+        #             model_kwargs=model_kwargs,
+        #             device=device,
+        #             progress=progress,
+        #             eta=eta,
+        #             original_image=original_image,
+        #             use_wandb=use_wandb,
+        #             directory=directory,
+        #             debug_mode=debug_mode,
+        #             norm=norm,
+        #             measurement_cond_fn=measurement_cond_fn,
+        #             exp_name=exp_name,
+        #     ):
+        #         final = sample
+        #     final_blur = final["sample"]
 
         return final_blur
 
@@ -884,10 +947,14 @@ class GaussianDiffusion:
         
         ori_sharp = original_image # for PSNR, SSIM
         shape = image.shape
-        indices = list(range(self.num_timesteps))
 
         norm_loss = norm['loss']
         reg_scale = norm['loss']
+        early_stop_step = norm['early_stop']
+        if 'early_stop' in exp_name:
+            indices = list(range(early_stop_step))
+        else:
+            indices = list(range(self.num_timesteps))
 
         if progress:
             # Lazy import so that we don't depend on tqdm.
@@ -899,27 +966,29 @@ class GaussianDiffusion:
             t = th.tensor([i] * shape[0], device=device)
             y_prev = y_prev.requires_grad_()
 
-            if (exp_name is not None) and (exp_name == "time"): # fail
+            if (exp_name is not None) and ("time" in exp_name): 
                 time_scale = th.from_numpy(self.sqrt_alphas_cumprod).to(device)[int(self._scale_timesteps(i))].float()
-            elif (exp_name is not None) and (exp_name == "reversed"):
+            elif (exp_name is not None) and ("reversed" in exp_name):
                 time_idx = self.num_timesteps - i - 1
-
                 time_scale = th.from_numpy(self.sqrt_alphas_cumprod).to(device)[int(self._scale_timesteps(time_idx))].float()
                 time_scale *= reg_scale
-                print(f"time_scale {time_scale}")
-            elif (exp_name is not None) and (exp_name == "exp"):
-                m1 = self.num_timesteps // 4
+            elif (exp_name is not None) and ("exp" in exp_name):
+                if 'early_stop' in exp_name:
+                    m1 = early_stop_step
+                else:
+                    m1 = self.num_timesteps // 4
                 m2 = self.num_timesteps - m1
                 if i < m1:
                     time_scale = np.exp(-((i-m1)**2)/reg_scale)
-                elif i > m1 and i < m2:
+                elif i < m2:
                     time_scale = 1.0
                 else:
                     time_scale = np.exp(-((i-m2)**2)/reg_scale)
-                print(f"time_scale {time_scale}")
             else:
                 time_scale = 1.0
-            reg_scale = time_scale * norm_loss
+            print(f"time_scale {time_scale}")
+            
+            reg_scale_cond = time_scale * norm_loss
 
             yi = self.ddim_reverse_sample(
                 model,
@@ -931,18 +1000,27 @@ class GaussianDiffusion:
                 model_kwargs=model_kwargs,
                 eta=eta,
             )
-
             y_i_img_t = yi["sample"] 
             y_i_img_0hat = yi["pred_xstart"] 
 
-            y_i_updated_img_t, distance = measurement_cond_fn(x_t=y_i_img_t,
-                                                   measurement=y0_measurement, # y0
-                                                   noisy_measurement=None, # measurement y0에 forward
-                                                   x_prev=y_prev,
-                                                   x_0_hat=y_i_img_0hat,
-                                                   reg_scale=reg_scale)
-
+            if 'condF' in exp_name:
+                y_i_new_img_t, distance = measurement_cond_fn(x_t=y_i_img_t,
+                                                              measurement=y0_measurement, # y0
+                                                              noisy_measurement=None, # measurement y0에 forward
+                                                              x_prev=y_prev,
+                                                              x_0_hat=y_i_img_0hat,
+                                                              reg_scale=reg_scale_cond)
+                if 'no_gradF' in exp_name:
+                    y_i_updated_img_t = y_i_img_t - distance * reg_scale_cond
+                    # print("condF & no_gradF")
+                else:
+                    y_i_updated_img_t = y_i_new_img_t
+                    # print("only condF")
+            else:
+                y_i_updated_img_t = y_i_img_t
+                
             y_prev = y_i_updated_img_t.detach_()
+            yi["sample"] = y_prev
             yield yi
 
             loss_before = get_loss(y_i_img_0hat, y0_measurement)
@@ -973,6 +1051,163 @@ class GaussianDiffusion:
             if debug_mode:
                 break
 
+
+    def ddim_reverse_sample_loop_progressive_ver2( # ver 2
+            self,
+            model,
+            image,
+            clip_denoised=True,
+            denoised_fn=None,
+            cond_fn=None,
+            model_kwargs=None,
+            device=None,
+            progress=False,
+            eta=0.0,
+            original_image=None,
+            use_wandb=False,
+            directory=None,
+            debug_mode=False,
+            norm=None,
+            measurement_cond_fn=None,
+            exp_name=None,
+    ):
+        """
+        XS: Use DDIM to perform encoding / inference, until isotropic Gaussian.
+        """
+        if device is None:
+            device = next(model.parameters()).device
+        
+        y_prev = image # y^(0)
+        y0_measurement = image.clone().detach() # y_0
+        
+        ori_sharp = original_image # for PSNR, SSIM
+        shape = image.shape
+
+        norm_loss = norm['loss']
+        reg_scale = norm['reg_scale']
+        early_stop_step = norm['early_stop']
+        forward_free = norm['forward_free']
+        forward_free_type = norm['forward_free_type']
+
+        if 'early_stop' in exp_name:
+            indices = list(range(early_stop_step))
+        else:
+            indices = list(range(self.num_timesteps))
+
+        if progress:
+            # Lazy import so that we don't depend on tqdm.
+            from tqdm.auto import tqdm
+
+            indices = tqdm(indices)
+        
+        for i in indices:
+            t = th.tensor([i] * shape[0], device=device)
+            y_prev = y_prev.requires_grad_()
+
+            if (exp_name is not None) and ("time" in exp_name): 
+                time_scale = th.from_numpy(self.sqrt_alphas_cumprod).to(device)[int(self._scale_timesteps(i))].float()
+            elif (exp_name is not None) and ("reversed" in exp_name):
+                time_idx = self.num_timesteps - i - 1
+                time_scale = th.from_numpy(self.sqrt_alphas_cumprod).to(device)[int(self._scale_timesteps(time_idx))].float()
+                time_scale *= reg_scale
+            elif (exp_name is not None) and ("exp" in exp_name):
+                if 'early_stop' in exp_name:
+                    m1 = early_stop_step
+                else:
+                    m1 = self.num_timesteps // 4
+                m2 = self.num_timesteps - m1
+                if i < m1:
+                    time_scale = np.exp(-((i-m1)**2)/reg_scale)
+                elif i < m2:
+                    time_scale = 1.0
+                else:
+                    time_scale = np.exp(-((i-m2)**2)/reg_scale)
+            else:
+                time_scale = 1.0
+            print(f"time_scale {time_scale}")
+
+            reg_scale_cond = time_scale * norm_loss
+
+            yi = self.ddim_reverse_sample(
+                model,
+                y_prev,
+                t,
+                clip_denoised=clip_denoised,
+                denoised_fn=denoised_fn,
+                cond_fn=cond_fn,
+                model_kwargs=model_kwargs,
+                eta=eta,
+            )
+            y_i_img_t = yi["sample"] 
+            y_i_img_0hat = yi["pred_xstart"] 
+
+            if 'condF' in exp_name:
+                y_i_new_img_t, distance = measurement_cond_fn(x_t=y_i_img_t,
+                                                              measurement=y0_measurement, # y0
+                                                              noisy_measurement=None, # measurement y0에 forward
+                                                              x_prev=y_prev,
+                                                              x_0_hat=y_i_img_0hat,
+                                                              reg_scale=reg_scale_cond)
+                if 'no_gradF' in exp_name:
+                    y_i_updated_img_t = y_i_img_t - distance * reg_scale_cond
+                    # print("condF & no_gradF")
+                else:
+                    y_i_updated_img_t = y_i_new_img_t
+                    # print("only condF")
+            else:
+                y_i_updated_img_t = y_i_img_t
+                
+            y_i_updated_img_t = y_i_updated_img_t.detach_()
+
+            if 'ddpmF' in exp_name:
+                # print('ddpmF')
+                y_i_img_0hat_to_yt = self.q_sample(y_i_img_0hat, t)
+
+                if forward_free_type == "linear_increase": # forward_free * i
+                    new_y_i_updated_img_t = (1-forward_free * i) * y_i_updated_img_t + forward_free * i * y_i_img_0hat_to_yt
+                elif forward_free_type == "time_scale": # forward_free * time_scale
+                    new_y_i_updated_img_t = (1-forward_free * time_scale) * y_i_updated_img_t + forward_free * time_scale * y_i_img_0hat_to_yt
+                else:
+                    new_y_i_updated_img_t = (1-forward_free) * y_i_updated_img_t + forward_free * y_i_img_0hat_to_yt
+            else:
+                new_y_i_updated_img_t = y_i_updated_img_t
+
+            y_prev = new_y_i_updated_img_t
+            yi["sample"] = y_prev
+            yield yi
+
+            loss_before = get_loss(y_i_img_0hat, y0_measurement)
+            loss_after = get_loss(y_i_updated_img_t, y0_measurement)
+
+            psnr, ssim = 0.0, 0.0
+            for idx in range(ori_sharp.shape[0]):
+                restored = th.clamp(y_i_img_0hat[idx], -1., 1.).cpu().detach().numpy()
+                target = th.clamp(ori_sharp[idx], -1., 1.).cpu().detach().numpy()
+                ps = psnr_loss(restored, target)
+                ss = ssim_loss(restored, target, data_range=2.0, multichannel=True, channel_axis=0)
+                psnr += ps
+                ssim += ss
+                print(f"[PSNR]: %.4f, [SSIM]: %.4f"% (ps, ss)+'\n')
+            psnr /= ori_sharp.shape[0]
+            ssim /=ori_sharp.shape[0]
+
+            if use_wandb:
+                wandb_log = {'enc_LPIPS_bef': loss_before['lpips'], 'enc_L2_bef': loss_before['l2'], \
+                             'enc_LPIPS_aft': loss_after['lpips'], 'enc_L2_aft': loss_after['l2'], \
+                             'enc_psnr_x0hat': psnr, 'enc_ssim_x0hat': ssim}
+                wandb.log(wandb_log)
+ 
+            if i % 100 == 0:
+                vtils.save_image(y_i_img_0hat, f'{directory}_updated_x_0_hat{i}.png', range=(-1,1), normalize=True)
+                vtils.save_image(y_i_updated_img_t, f'{directory}_x_t{i}.png', range=(-1,1), normalize=True)
+                vtils.save_image(new_y_i_updated_img_t, f'{directory}_new_x_t{i}.png', range=(-1,1), normalize=True)
+                
+                if 'ddpmF' in exp_name:
+                    vtils.save_image(y_i_img_0hat_to_yt, f'{directory}_noisy_x_0_hat{i}.png', range=(-1,1), normalize=True)
+                
+
+            if debug_mode:
+                break
 
     def _vb_terms_bpd(
             self, model, x_start, x_t, t, clip_denoised=True, model_kwargs=None
@@ -1159,7 +1394,6 @@ class GaussianDiffusion:
             "mse": mse,
         }
     
-
 
 def _extract_into_tensor(arr, timesteps, broadcast_shape):
     """

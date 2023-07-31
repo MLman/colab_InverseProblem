@@ -21,6 +21,7 @@ from cm import dist_util, logger
 from cm.nn import mean_flat
 from guided_diffusion.condition_methods import get_conditioning_method
 from guided_diffusion.measurements import get_noise, get_operator
+from guided_diffusion.svd_operators import Deblurring
 
 import torchvision.utils as vtils
 
@@ -63,7 +64,8 @@ def main():
     data_name = task_config['data']['name'].upper()
     task_name = measure_config['operator']['name']
 
-    norm_dict = {"loss":args.norm_loss, "img":args.norm_img, "reg_scale":args.reg_scale}
+    norm_dict = {"loss":args.norm_loss, "img":args.norm_img, "reg_scale":args.reg_scale, "early_stop":args.early_stop, \
+                "forward_free":args.forward_free, "forward_free_type":args.forward_free_type}
 
     # set save directory
     args.ori_logsuffix = args.log_suffix
@@ -73,9 +75,13 @@ def main():
         if args.toyver == 1:
             args.log_suffix = f'{args.log_suffix}/{data_name}_toyver{args.toyver}{args.exp_name}{task_name}/time{args.diffusion_steps}normL{args.norm_loss}_regscale{args.reg_scale}'
         elif args.toyver == 2:
-            args.log_suffix = f'{args.log_suffix}/{data_name}_toyver{args.toyver}_{task_name}/time{args.diffusion_steps}normimg{args.norm_img}'
+            args.log_suffix = f'{args.log_suffix}/{data_name}_toyver{args.toyver}_{task_name}/time{args.diffusion_steps}normimg{args.norm_img}_forfree{args.forward_free_type}{args.forward_free}'
         # else:
             # args.log_suffix = f'{args.log_suffix}/{data_name}_toyver{args.toyver}_{task_name}/normL{args.norm_loss}'
+
+    if 'early_stop' in args.exp_name:
+        replace_name = f'early_stop{args.early_stop}'
+        args.log_suffix = args.log_suffix.replace('early_stop', replace_name)
 
     args.log_dir = os.path.join(args.log_dir, args.log_suffix)
     args.save_dir = args.log_dir
@@ -117,7 +123,18 @@ def main():
     model.eval()
 
     # Prepare Operator and noise
-    operator = get_operator(device=dist_util.dev(), **measure_config['operator'])
+    if measure_config['operator']['name'] == 'gaussian_blur':
+        sigma = measure_config['operator']['intensity']
+        kernel_size = measure_config['operator']['kernel_size']
+
+        def pdf(x, sigma=sigma):
+            return th.exp(th.Tensor([-0.5 * (x / sigma) ** 2]))
+        
+        kernel = th.Tensor([pdf(i) for i in range(-int(kernel_size//2), int(kernel_size//2)+1)])
+        operator = Deblurring(kernel / kernel.sum(), 3, 256, dist_util.dev())
+    else:
+        raise NotImplementedError
+    # operator_default = get_operator(device=dist_util.dev(), **measure_config['operator'])
     noiser = get_noise(**measure_config['noise'])
     logger.info(f"Operation: {measure_config['operator']['name']} / Noise: {measure_config['noise']['name']}")
     
@@ -168,18 +185,17 @@ def main():
 
             # Forward measurement model (Ax + n)
             y = operator.forward(ref_img, mask=mask)
-            y_n = noiser(y)
-
         else: 
             # Forward measurement model (Ax + n)
-            y = operator.forward(ref_img)
-            y_n = noiser(y)
-            # y_n = y
+            y = operator.A(ref_img)
 
-        # plt.imsave(os.path.join(out_path, 'input', fname), clear_color(y_n))
-        # plt.imsave(os.path.join(out_path, 'label', fname), clear_color(ref_img))
-        plt.imsave(os.path.join(out_path, f'input{fname}'), clear_color(y_n))
-        plt.imsave(os.path.join(out_path, f'label{fname}'), clear_color(ref_img))
+        b, hwc = y.size()
+        hw = hwc / 3
+        h = w = int(hw ** 0.5)
+        y = y.reshape((b, 3, h, w))
+
+        y_n = noiser(y)
+        y_measurement = y_n.clone()
 
         forward_dir = f'{args.save_dir}/{i}_for_'
         backward_dir = f'{args.save_dir}/{i}_back_'
@@ -217,8 +233,12 @@ def main():
             use_wandb=args.use_wandb,
             directory=backward_dir,
             original_image=ref_img,
-            # measurement_cond_fn=measurement_cond_fn,
-            debug_mode=args.debug_mode
+            debug_mode=args.debug_mode,
+            norm=norm_dict,
+            toyver=args.toyver,
+            measurement_cond_fn=measurement_cond_fn,
+            y0_measurement=y_measurement,
+            exp_name=args.exp_name
         )
         logger.log(f"obtained reconstructed restored images...")
         # plt.imsave(os.path.join(out_path, 'recon', fname), clear_color(sample_restored))
@@ -255,7 +275,7 @@ def main():
 
         if args.debug_mode and i ==0: return
 
-        if i == 7: return
+        if i == 2: return
 
 
     logger.log("Completed")
@@ -276,9 +296,7 @@ def create_argparser():
     parser.add_argument('--task_config', type=str, default='configs/noise_0.05/gaussian_deblur_config.yaml')
 
     parser.add_argument('--exp_name', type=str, default=None)
-    parser.add_argument('--log_dir', type=str, default='./results_toy/0724_nonBlinddebug')
-    # parser.add_argument('--log_dir', type=str, default='./results_toy/toy230724_nonblind/AFHQ_Cat')
-    # parser.add_argument('--log_dir', type=str, default='./results_toy/toy230724_nonblind/FFHQ_1K')
+    parser.add_argument('--log_dir', type=str, default='./results_toy/0731_nonBlinddebug')
     parser.add_argument('-log','--log_suffix', type=str, required=True) # Experiment name, starts with tb(tesorboard) ->  tb_exp1
     # parser.add_argument('--model_path', type=str, default='./models/afhqCat/guided_diffusion_afhqcat_ema_0.9999_625000.pt')
     parser.add_argument('--model_path', type=str, default='./models/ffhq_1k/ffhq_10m.pt')
@@ -292,7 +310,9 @@ def create_argparser():
     parser.add_argument('--norm_img', type=float, default=0.01) 
     parser.add_argument('--norm_loss', type=float, default=0.01) 
     parser.add_argument('--reg_scale', type=float, default=0.01) 
-
+    parser.add_argument('--early_stop', type=int, default=300)
+    parser.add_argument('--forward_free', type=float, default=-0.1)
+    parser.add_argument('--forward_free_type', type=str, default="linear_increase") # linear_increase, time_scale
 
     add_dict_to_argparser(parser, defaults)
     return parser

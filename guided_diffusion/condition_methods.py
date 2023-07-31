@@ -29,12 +29,14 @@ class ConditioningMethod(ABC):
     
     def grad_and_value(self, x_prev, x_0_hat, measurement, **kwargs):
         if self.noiser.__name__ == 'gaussian':
-            difference = measurement - self.operator.forward(x_0_hat, **kwargs)
+            # difference = measurement - self.operator.forward(x_0_hat, **kwargs)
+            difference = measurement - self.operator.A(x_0_hat)
             norm = torch.linalg.norm(difference)
             norm_grad = torch.autograd.grad(outputs=norm, inputs=x_prev)[0]
         
         elif self.noiser.__name__ == 'poisson':
-            Ax = self.operator.forward(x_0_hat, **kwargs)
+            # Ax = self.operator.forward(x_0_hat, **kwargs)
+            Ax = self.operator.A(x_0_hat)
             difference = measurement-Ax
             norm = torch.linalg.norm(difference) / measurement.abs()
             norm = norm.mean()
@@ -87,7 +89,7 @@ class PosteriorSampling(ConditioningMethod):
         norm_grad, norm = self.grad_and_value(x_prev=x_prev, x_0_hat=x_0_hat, measurement=measurement, **kwargs)
         x_t -= norm_grad * reg_scale
         return x_t, norm
-        
+    
 @register_conditioning_method(name='ps+')
 class PosteriorSamplingPlus(ConditioningMethod):
     def __init__(self, operator, noiser, **kwargs):
