@@ -5,6 +5,7 @@ numpy array. This can be used to produce samples for FID evaluation.
 from functools import partial
 import argparse
 import os, sys
+sys.path.append(os.path.dirname(os.path.abspath(os.path.dirname(__file__))))
 import yaml
 import random
 from tqdm import tqdm
@@ -22,15 +23,14 @@ from cm.nn import mean_flat
 from guided_diffusion.condition_methods import get_conditioning_method
 from guided_diffusion.measurements import get_noise, get_operator
 from guided_diffusion.svd_operators import Deblurring
-
+from torchinfo import summary
 import torchvision.utils as vtils
 
 from skimage.metrics import peak_signal_noise_ratio as psnr_loss
 from skimage.metrics import structural_similarity as ssim_loss
 
-# from guided_diffusion.script_util_gradient import(
-# from guided_diffusion.script_util import(
-from guided_diffusion.script_util_nonblind import(
+from guided_diffusion.feature_inject import FeatureStore, register_feature_store
+from guided_diffusion.script_util_nonblind_grammatrix import(
     NUM_CLASSES,
     model_and_diffusion_defaults, # AFHQ
     ffhq_model_and_diffusion_defaults, # FFHQ
@@ -65,6 +65,7 @@ def main():
     task_name = measure_config['operator']['name']
 
     norm_dict = {"loss":args.norm_loss, "img":args.norm_img, "reg_scale":args.reg_scale, "early_stop":args.early_stop, \
+                 "gram_scale": args.gram_scale, \
                 "forward_free":args.forward_free, "forward_free_type":args.forward_free_type}
 
     # set save directory
@@ -88,7 +89,7 @@ def main():
 
     if args.kakao:
         model_path = args.model_path.split('/')[-1]
-        args.model_path = os.path.join('/app/input/dataset/dps-ckpt', model_path)
+        args.model_path = os.path.join('/app/input/dataset/dps/dps-checkpoint', model_path)
 
     mkdir(args.save_dir)
     
@@ -97,7 +98,6 @@ def main():
     logger.configure(dir=args.save_dir)
 
     logger.log("creating model and diffusion...")
-        
     if 'afhq' in args.model_path:
         image_dict = args_to_dict(args, model_and_diffusion_defaults().keys())
         image_dict.update(model_and_diffusion_defaults())
@@ -113,7 +113,7 @@ def main():
     else:
         NotImplementedError()
 
-    diffusion_dict = {'diffusion_steps':args.diffusion_steps}
+    diffusion_dict = {'diffusion_steps':args.diffusion_steps, 'feature_type':args.feature_type}
     image_dict.update(diffusion_dict)
 
     model, diffusion = create_model_and_diffusion(
@@ -159,9 +159,8 @@ def main():
 
     # Prepare dataloader
     data_config = task_config['data']
-
     if args.kakao:
-        data_config['root'] = '/app/input/dataset/ffhq1k'
+        data_config['root'] = '/app/input/dataset/dps/ffhq_1K'
     
     transform = transforms.Compose([transforms.ToTensor()])
     dataset = get_dataset(**data_config, transforms=transform)
@@ -175,12 +174,13 @@ def main():
 
     if args.use_wandb:
         import wandb
-        table_name = f"{args.wandb_table}_{args.toy_exp}"
+        table_name = f"{args.wandb_table}_{args.exp_name}"
         wandb.init(project="toy", name=table_name)
         wandb.config.update(args)
 
     lpips = LPIPS(replace_pooling=True, reduction="none")
-    
+
+
     for i, ref_img in enumerate(loader):
         logger.info(f"Inference for image {i}")
         fname = str(i).zfill(5) + '.png'
@@ -228,13 +228,14 @@ def main():
             norm=norm_dict,
             toyver=args.toyver,
             measurement_cond_fn=measurement_cond_fn,
-            exp_name=args.exp_name
+            exp_name=args.exp_name,
+    
         )
         # plt.imsave(os.path.join(out_path, 'ddim_noise', fname), clear_color(noise_restored))
         plt.imsave(os.path.join(out_path, f'ddim_noise{fname}'), clear_color(noise_restored))
 
         logger.log(f"obtained latent representation for restored images...")
-
+        
         sample_restored = diffusion.ddim_sample_loop(
             model,
             (args.batch_size, 3, 256, 256),
@@ -271,8 +272,9 @@ def main():
             ss = ssim_loss(restored, target, data_range=2.0, multichannel=True, channel_axis=0)
             psnr += ps
             ssim += ss
-            print(f"[PSNR]: %.4f, [SSIM]: %.4f"% (ps, ss)+'\n')
-            
+            result = f"[PSNR]: %.4f, [SSIM]: %.4f"% (ps, ss)+'\n'
+            print(result)
+            logger.log(result)            
         psnr /= args.batch_size
         ssim /= args.batch_size
         
@@ -287,6 +289,7 @@ def main():
 
         if args.debug_mode and i ==0: return
 
+        # if i == 2: return
         return
 
 
@@ -308,11 +311,10 @@ def create_argparser():
     parser.add_argument('--task_config', type=str, default='configs/noise_0.05/gaussian_deblur_config.yaml')
 
     parser.add_argument('--exp_name', type=str, default=None)
-    parser.add_argument('--log_dir', type=str, default='./results_toy/0731_nonBlinddebug')
+    parser.add_argument('--log_dir', type=str, default='./results_toy/0801ddebug')
     parser.add_argument('-log','--log_suffix', type=str, required=True) # Experiment name, starts with tb(tesorboard) ->  tb_exp1
-    # parser.add_argument('--model_path', type=str, default='./models/afhqCat/guided_diffusion_afhqcat_ema_0.9999_625000.pt')
     parser.add_argument('--model_path', type=str, default='./models/ffhq_1k/ffhq_10m.pt')
-
+    
     parser.add_argument('--kakao', action='store_true', default=False)
     parser.add_argument('--use_wandb', action='store_true', default=False)
     parser.add_argument('--run', action='store_true', default=False)
@@ -322,10 +324,14 @@ def create_argparser():
 
     parser.add_argument('--norm_img', type=float, default=0.01) 
     parser.add_argument('--norm_loss', type=float, default=0.01) 
-    parser.add_argument('--reg_scale', type=float, default=0.01) 
+    parser.add_argument('--reg_scale', type=float, default=10) 
+    parser.add_argument('--gram_scale', type=float, default=100) 
     parser.add_argument('--early_stop', type=int, default=300)
     parser.add_argument('--forward_free', type=float, default=-0.1)
     parser.add_argument('--forward_free_type', type=str, default="linear_increase") # linear_increase, time_scale
+    
+    parser.add_argument('--feature_type', type=str, default="in_mid_out") # in mid out
+
 
     add_dict_to_argparser(parser, defaults)
     return parser

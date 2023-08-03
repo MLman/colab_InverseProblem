@@ -30,7 +30,8 @@ class ConditioningMethod(ABC):
     def grad_and_value(self, x_prev, x_0_hat, measurement, **kwargs):
         if self.noiser.__name__ == 'gaussian':
             # difference = measurement - self.operator.forward(x_0_hat, **kwargs)
-            difference = measurement - self.operator.A(x_0_hat)
+            shape = x_0_hat.shape
+            difference = measurement - self.operator.A(x_0_hat).view(shape[0], shape[1], shape[2], shape[3])
             norm = torch.linalg.norm(difference)
             norm_grad = torch.autograd.grad(outputs=norm, inputs=x_prev)[0]
         
