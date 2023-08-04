@@ -29,7 +29,6 @@ import torchvision.utils as vtils
 from skimage.metrics import peak_signal_noise_ratio as psnr_loss
 from skimage.metrics import structural_similarity as ssim_loss
 
-from guided_diffusion.feature_inject import FeatureStore, register_feature_store
 from guided_diffusion.script_util_nonblind_grammatrix import(
     NUM_CLASSES,
     model_and_diffusion_defaults, # AFHQ
@@ -206,6 +205,7 @@ def main():
 
         y_n = noiser(y)
         y_measurement = y_n.clone()
+        plt.imsave(os.path.join(out_path, f'label{fname}'), clear_color(ref_img))
         plt.imsave(os.path.join(out_path, f'y{fname}'), clear_color(y))
         plt.imsave(os.path.join(out_path, f'y_n{fname}'), clear_color(y_n))
 
@@ -310,7 +310,7 @@ def create_argparser():
     # parser.add_argument('--model_config', type=str, default='configs/ffhq_model_config.yaml')
     parser.add_argument('--task_config', type=str, default='configs/noise_0.05/gaussian_deblur_config.yaml')
 
-    parser.add_argument('--exp_name', type=str, default=None)
+    parser.add_argument('--exp_name', type=str, default='None')
     parser.add_argument('--log_dir', type=str, default='./results_toy/0801ddebug')
     parser.add_argument('-log','--log_suffix', type=str, required=True) # Experiment name, starts with tb(tesorboard) ->  tb_exp1
     parser.add_argument('--model_path', type=str, default='./models/ffhq_1k/ffhq_10m.pt')
