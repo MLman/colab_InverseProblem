@@ -69,8 +69,11 @@ def main():
 
     # set save directory
     args.ori_logsuffix = args.log_suffix
+    args.ori_log_dir = args.log_dir
     if args.run:
         args.log_suffix = args.log_suffix
+        args.global_result_path = os.path.join(args.ori_log_dir, 'all_results')
+        mkdir(args.global_result_path)
     else:
         if args.toyver == 1:
             args.log_suffix = f'{args.log_suffix}/{data_name}_toyver{args.toyver}{args.exp_name}{task_name}/time{args.diffusion_steps}normL{args.norm_loss}_regscale{args.reg_scale}'
@@ -218,6 +221,7 @@ def main():
         noise_restored = diffusion.ddim_reverse_sample_loop(
             model,
             image=x_start,
+            operator=operator,
             clip_denoised=True,
             original_image=ref_img, # for PSNR, SSIM
             device=dist_util.dev(),
@@ -240,6 +244,7 @@ def main():
             model,
             (args.batch_size, 3, 256, 256),
             noise=noise_restored,
+            operator=operator,
             clip_denoised=True,
             device=dist_util.dev(),
             progress=True,
@@ -286,6 +291,15 @@ def main():
             results = f'{i}th iter --->' + "[PSNR]: %.4f, [SSIM]: %.4f, [L2 loss]: %.4f, [LPIPS loss]: %.4f"% (psnr, ssim, l2_loss, lpips_loss) + '\n'
             print(results)
             f.write(results)
+
+        if args.run:
+            dir_list = args.log_suffix.split('/')
+            recon_name = f'{dir_list[0]}{dir_list[1]}'
+            plt.imsave(os.path.join(args.global_result_path, f'{recon_name}.png'), clear_color(sample_restored))
+            
+            with open(os.path.join(args.global_result_path,'all_results.txt'),'a') as f:
+                results = f'{recon_name}\n' + "[PSNR]: %.4f, [SSIM]: %.4f, [L2 loss]: %.4f, [LPIPS loss]: %.4f"% (psnr, ssim, l2_loss, lpips_loss) + '\n\n'
+                f.write(results)
 
         if args.debug_mode and i ==0: return
 
