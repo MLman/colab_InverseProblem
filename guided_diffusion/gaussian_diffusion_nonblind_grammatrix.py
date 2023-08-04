@@ -604,6 +604,7 @@ class GaussianDiffusion:
             self,
             model,
             shape,
+            operator,            
             noise=None,
             original_image=None,
             clip_denoised=True,
@@ -630,6 +631,7 @@ class GaussianDiffusion:
         final = None
         for sample in self.ddim_sample_loop_progressive(
                 model,
+                operator,
                 shape,
                 noise=noise,
                 clip_denoised=clip_denoised,
@@ -657,6 +659,7 @@ class GaussianDiffusion:
     def ddim_sample_loop_progressive(
             self,
             model,
+            operator,
             shape,
             noise=None,
             clip_denoised=True,
@@ -690,7 +693,8 @@ class GaussianDiffusion:
         else:
             # img = th.randn(*shape, device=device)
             assert NotImplementedError
-
+        
+        b, c, h, w = shape[0], shape[1], shape[2], shape[3]
         time_zero = th.tensor([0] * shape[0], device=device)
         y0_grammatrix = model(y0_measurement, self._scale_timesteps(time_zero))
         G_y0 = model.gram_matrices
@@ -770,27 +774,38 @@ class GaussianDiffusion:
 
             loss_blur = get_loss(ori_cleanGT, y_i_img_0hat)
 
-            if 'condB' in exp_name: ## y=Hx
+            ########### [Gram Matrix] ##############
+            if 'BefGramB' in exp_name:
+                y_i_img_t = y_i_img_t - loss_G * gram_scale
+                
+            ########### [Conditioning] ###########
+            if 'condB' in exp_name:
                 y_i_new_img_t, distance = measurement_cond_fn(x_t=y_i_img_t,
                                                               measurement=y0_measurement, # y0
                                                               noisy_measurement=None, # measurement y0에 forward
                                                               x_prev=y_prev,
                                                               x_0_hat=y_i_img_0hat,
                                                               reg_scale=reg_scale_cond)
-                if 'no_gradB' in exp_name:
-                    y_i_updated_img_t = y_i_img_t - distance * reg_scale_cond
-                else: # conditioning with grad
-                    y_i_updated_img_t = y_i_new_img_t
+            elif 'no_gradB' in exp_name:
+                Hy0hat = operator.A(y_i_img_0hat) # H * y_0_hat    
+                Hy0hat = Hy0hat.reshape((b, c, h, w))
 
-                if 'gramB' in exp_name:
-                    y_i_updated_img_t = y_i_updated_img_t - loss_G * gram_scale
-                    
-            elif 'gramB' in exp_name:
-                y_i_updated_img_t = y_i_img_t - loss_G * gram_scale
-            else: # no conditioning
-                y_i_updated_img_t = y_i_img_t
+                y_minus_Hy0hat = y0_measurement - Hy0hat # y - H*y_0_hat
 
-            y_prev = y_i_updated_img_t.detach_()
+                H_t_mul_diff = operator.At(y_minus_Hy0hat) # H^T * (y - H*y_0hat)
+                H_t_mul_diff = H_t_mul_diff.reshape((b, c, h, w))
+
+                y_i_new_img_t = y_i_img_t - 2 * H_t_mul_diff * reg_scale_cond
+            
+            else:
+                y_i_new_img_t = y_i_img_t
+            
+
+            ########### [Gram Matrix] ##############
+            if 'AftGramB' in exp_name:
+                y_i_new_img_t = y_i_new_img_t - loss_G * gram_scale
+
+            y_prev = y_i_new_img_t.detach_()
             yi["sample"] = y_prev
             yield yi
             
@@ -811,8 +826,11 @@ class GaussianDiffusion:
                              'time_scale': time_scale, 'dec_psnr_x0hat': psnr, 'dec_ssim_x0hat': ssim}
                 wandb.log(wandb_log)
             if i % 100 == 0:
+                if 'no_gradB' in exp_name:
+                    vtils.save_image(Hy0hat, f'{directory}nogradB_Hy0hat{i}.png', range=(-1,1), normalize=True)
+                    vtils.save_image(H_t_mul_diff, f'{directory}nogradB_H_t_mul_diff{i}.png', range=(-1,1), normalize=True)
                 vtils.save_image(y_i_img_0hat, f'{directory}_x_0_hat{i}.png', range=(-1,1), normalize=True)
-                vtils.save_image(y_i_img_t, f'{directory}_x_t{i}.png', range=(-1,1), normalize=True)
+                vtils.save_image(y_i_new_img_t, f'{directory}_x_t{i}.png', range=(-1,1), normalize=True)
             
             if debug_mode:
                 break
@@ -865,6 +883,7 @@ class GaussianDiffusion:
             self,
             model,
             image,
+            operator,
             original_image,
             toyver,
             clip_denoised=True,
@@ -892,6 +911,7 @@ class GaussianDiffusion:
             for sample in self.ddim_reverse_sample_loop_progressive_ver1(
                     model,
                     image,
+                    operator=operator,
                     clip_denoised=clip_denoised,
                     denoised_fn=denoised_fn,
                     cond_fn=cond_fn,
@@ -917,6 +937,7 @@ class GaussianDiffusion:
             self,
             model,
             image,
+            operator,
             clip_denoised=True,
             denoised_fn=None,
             cond_fn=None,
@@ -943,7 +964,8 @@ class GaussianDiffusion:
 
         ori_sharp = original_image # for PSNR, SSIM
         shape = image.shape
-        
+        b, c, h, w = shape[0], shape[1], shape[2], shape[3]
+
         time_zero = th.tensor([0] * shape[0], device=device)
         y0_grammatrix = model(y0_measurement, self._scale_timesteps(time_zero))
         G_y0 = model.gram_matrices
@@ -1021,6 +1043,11 @@ class GaussianDiffusion:
             loss_G = loss_G.mean()
             print(f"loss_G {loss_G}")
 
+            ########### [Gram Matrix] ##############
+            if 'BefGramF' in exp_name:
+                y_i_img_t = y_i_img_t - loss_G * gram_scale
+
+            ########### [Conditioning] ###########
             if 'condF' in exp_name:
                 y_i_new_img_t, distance = measurement_cond_fn(x_t=y_i_img_t,
                                                               measurement=y0_measurement, # y0
@@ -1028,25 +1055,29 @@ class GaussianDiffusion:
                                                               x_prev=y_prev,
                                                               x_0_hat=y_i_img_0hat,
                                                               reg_scale=reg_scale_cond)
-                if 'no_gradF' in exp_name:
-                    y_i_updated_img_t = y_i_img_t - distance * reg_scale_cond
-                else: # conditioning with grad
-                    y_i_updated_img_t = y_i_new_img_t
+            elif 'no_gradF' in exp_name:
+                Hy0hat = operator.A(y_i_img_0hat) # H * y_0_hat
+                Hy0hat = Hy0hat.reshape((b, c, h, w))
 
-                if 'gramF' in exp_name:
-                    y_i_updated_img_t = y_i_updated_img_t - loss_G * gram_scale
-
-            elif 'gramF' in exp_name:
-                y_i_updated_img_t = y_i_img_t - loss_G * gram_scale
+                y_minus_Hy0hat = y0_measurement - Hy0hat # y - H*y_0_hat (1, 3, 256, 256)
+                
+                H_t_mul_diff = operator.At(y_minus_Hy0hat) # H^T * (y - H*y_0hat)
+                H_t_mul_diff = H_t_mul_diff.reshape((b, c, h, w))
+                
+                y_i_new_img_t = y_i_img_t - 2 * H_t_mul_diff * reg_scale_cond
             else:
-                y_i_updated_img_t = y_i_img_t
+                y_i_new_img_t = y_i_img_t
 
-            y_prev = y_i_updated_img_t.detach_()
+            ########### [Gram Matrix] ##############
+            if 'AftGramF' in exp_name:
+                y_i_new_img_t = y_i_new_img_t - loss_G * gram_scale
+
+            y_prev = y_i_new_img_t.detach_()
             yi["sample"] = y_prev
             yield yi
     
             loss_before = get_loss(y_i_img_0hat, y0_measurement)
-            loss_after = get_loss(y_i_updated_img_t, y0_measurement)
+            loss_after = get_loss(y_i_new_img_t, y0_measurement)
 
             psnr, ssim = 0.0, 0.0
             for idx in range(ori_sharp.shape[0]):
@@ -1067,8 +1098,11 @@ class GaussianDiffusion:
                 wandb.log(wandb_log)
  
             if i % 100 == 0:
+                if 'no_gradF' in exp_name:
+                    vtils.save_image(Hy0hat, f'{directory}nogradF_Hy0hat{i}.png', range=(-1,1), normalize=True)
+                    vtils.save_image(H_t_mul_diff, f'{directory}nogradF_H_t_mul_diff{i}.png', range=(-1,1), normalize=True)
                 vtils.save_image(y_i_img_0hat, f'{directory}_updated_x_0_hat{i}.png', range=(-1,1), normalize=True)
-                vtils.save_image(y_i_updated_img_t, f'{directory}_x_t{i}.png', range=(-1,1), normalize=True)
+                vtils.save_image(y_i_new_img_t, f'{directory}_x_t{i}.png', range=(-1,1), normalize=True)
 
             if debug_mode:
                 break

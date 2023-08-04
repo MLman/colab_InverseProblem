@@ -1,0 +1,217 @@
+import argparse
+import ast
+import subprocess
+import time
+import pynvml
+import os
+from datetime import datetime
+# kiml run submit --dataset dps --experiment toy-inverseproblem --image dps-final --instance-type 0.14A100-2-MO --num-replica 1 "python run_toy_gram.py --kakao"
+# kiml run submit --dataset dps --experiment toy-inverseproblem --image dps-final --instance-type 1A100-2-MO --num-replica 1 "python run_toy_gram.py --kakao"
+
+def waitGPU(gpus = ["0"], waitTime=60):
+    avail_gpus = []
+    pynvml.nvmlInit()
+    while True:
+        for gpu in gpus:
+            handle = pynvml.nvmlDeviceGetHandleByIndex(gpu)
+            if len(pynvml.nvmlDeviceGetComputeRunningProcesses(handle)) == 0:
+                avail_gpus.append(gpu)
+                # return gpu
+
+        # for proc in pynvml.nvmlDeviceGetComputeRunningProcesses(handle):
+        #     result[gpu] = [proc.pid, proc.usedGpuMemory]
+
+        if len(avail_gpus) == 0:
+            print("Wait for finish")
+            time.sleep(waitTime)
+        else:
+            return avail_gpus
+
+def on_terminate(proc):
+    print("process {} terminated".format(proc))
+
+def str2list(s):
+    v = ast.literal_eval(s)
+    if type(v) is not list:
+        raise argparse.ArgumentTypeError("Argument \"%s\" is not a list" % (s))
+    return v
+
+parser = argparse.ArgumentParser(description="Baseline Reproduce")
+# parser.add_argument('--gpus', default=[0, 1, 2, 3, 4, 5, 6, 7], type=str2list)
+parser.add_argument('--gpus', default=[3], type=str2list)
+# parser.add_argument('--log_dir', type=str, default='./results_toy/0803_aftermeeting/noGrad')
+parser.add_argument('--log_dir', type=str, default='./results_toy/0803_aftermeeting_aftercoding_Debug2')
+parser.add_argument('--kakao', action='store_true', default=False)
+
+parser.add_argument('--toyver', type=int, default=1)
+# parser.add_argument('--diffusion_steps', type=int, default=['250', '500','1000'])
+# parser.add_argument('--diffusion_steps', type=int, default=['250'])
+parser.add_argument('--diffusion_steps', type=int, default=['1000'])
+# parser.add_argument('--diffusion_steps', type=int, default=['250', '500'])
+
+# parser.add_argument('--early_stop', type=str2list, default=["50", "100", "200"])
+parser.add_argument('--early_stop', type=str2list, default=["50"])
+# parser.add_argument('--early_stop', type=str2list, default=["100"])
+# parser.add_argument('--early_stop', type=str2list, default=["200"])
+
+# parser.add_argument('--norm_loss', type=str2list, default=["1e-3", "1", "5"]) 
+parser.add_argument('--norm_loss', type=str2list, default=["-0.1"]) 
+# parser.add_argument('--norm_loss', type=str2list, default=["-10", "-5", "-2", "-1", "-0.5", "-0.1", "-1", "-2"]) 
+
+
+# parser.add_argument('--reg_scale', type=str2list, default=["1e-3", "1", "100"]) 
+# parser.add_argument('--reg_scale', type=str2list, default=["1e-3"]) 
+parser.add_argument('--reg_scale', type=str2list, default=["1"])
+# parser.add_argument('--reg_scale', type=str2list, default=["100"])
+
+# parser.add_argument('--gram_scale', type=str2list, default=["1e-5", "1e-4", "1e-3", "1e-2", "1e-1"])  # X: 10이상
+# parser.add_argument('--gram_scale', type=str2list, default=["1e-5"]) 
+# parser.add_argument('--gram_scale', type=str2list, default=["1e-4"]) 
+# parser.add_argument('--gram_scale', type=str2list, default=["1e-3"]) 
+parser.add_argument('--gram_scale', type=str2list, default=["1e-1","1e-3","5e-1"]) 
+# parser.add_argument('--gram_scale', type=str2list, default=["5e-1"]) 
+
+# parser.add_argument('--feature_type', type=str2list, default=["in", "mid", "out", "in_mid", "in_out", "mid_out", "in_mid_out"]) 
+# parser.add_argument('--feature_type', type=str2list, default=["in_mid_out"]) 
+parser.add_argument('--feature_type', type=str2list, default=["out"]) 
+
+
+args = parser.parse_args()
+
+# measurement based condition list:
+# condF_list = ['condF', 'gramF', 'condF_no_gradF', 'condF_gramF', 'condF_no_gradF_gramF', 'None'] # 3
+# condB_list = ['condB', 'gramB', 'condB_no_gradB', 'condB_gramB', 'condB_no_gradB_gramB', 'None'] # 3
+
+# condF_list = ['condF'] # 3
+# condB_list = ['condB'] # 3
+
+
+# condF_list = ['no_gradF', 'None'] # 3
+# condB_list = ['no_gradB', 'None'] # 3
+
+# condF_list = ['condF'] 
+# condB_list = ['no_gradB'] 
+
+condF_list = ['no_gradF']
+condB_list = ['condB']
+
+
+
+# time scaling list:
+# time_list = ['time', 'reversed', 'exp', 'None'] # 4
+# time_list = ['exp'] # 4
+# time_list = ['oriexp'] # 4
+# time_list = ['exp' ,'oriexp'] # 4
+# time_list = ['time', 'None'] # 4
+# time_list = ['None'] # 4
+time_list = ['None','time', 'oriexp','exp'] # 4/
+
+# early_stop list:
+# early_stop_list = ['early_stop', 'None'] # 2
+early_stop_list = ['None'] # 2
+# early_stop_list = ['early_stop'] # 2
+
+ddpmF_list = ['ddpmF', 'None'] # 2 for only toy2
+
+all_exp_cond_list = []
+for condF in condF_list:
+    for condB in condB_list:
+
+        if (condF == 'None') and (condB == 'None'):
+            continue
+
+        for times in time_list:
+            for es in early_stop_list:
+                
+                if args.toyver == 1:
+                    all_exp_cond_list.append(f'{condF}_{condB}_{times}_{es}')
+                
+                elif args.toyver == 2:
+                    for ddpmF in ddpmF_list:
+                        all_exp_cond_list.append(f'{condF}_{condB}_{times}_{es}_{ddpmF}')
+
+print(all_exp_cond_list)
+print(len(all_exp_cond_list)) # toy1: 72
+
+# gpus = args.gpus
+
+# sub_process_log = f'{args.log_dir}/run_command.txt'
+# os.makedirs(args.log_dir, exist_ok=True)
+
+task_config_list = [
+    'configs/noise_0.05/gaussian_deblur_config.yaml', # OK
+    # 'configs/noise_0.05/inpainting_box_config.yaml', # OK
+    # 'configs/noise_0.05/inpainting_config.yaml',
+    # 'configs/noise_0.05/motion_deblur_config.yaml', # OK
+    # 'configs/noise_0.05/nonlinear_deblur_config.yaml',
+    # 'configs/noise_0.05/phase_retrieval_config.yaml',
+    # 'configs/noise_0.05/super_resolution_config.yaml', # OK
+]
+
+# if args.kakao:
+#     subprocess.call('pip3 install mpi4py', shell=True)
+#     subprocess.call('pip3 install torchinfo', shell=True)
+#     subprocess.call('pip install scikit-image', shell=True)
+#     subprocess.call('pip install einops', shell=True)
+#     subprocess.call('pip install pynvml', shell=True)
+
+for task_config in task_config_list:
+    task_name = task_config.split('/')[-1].split('_config')[0]
+    
+    for reg_scale in args.reg_scale:
+        for norm_loss in args.norm_loss:
+            for diffusion_steps in args.diffusion_steps:
+                for exp_name in all_exp_cond_list:
+
+                    if 'gram' in exp_name:
+                        for feature_type in args.feature_type:
+                            for gram_scale in args.gram_scale:
+                                # gpus = waitGPU(args.gpus, 120)
+                                # print("Activate GPUS : ", gpus)
+
+                                if args.toyver == 1:
+                                    log_dir = os.path.join(args.log_dir, 'toyver1')
+                                    log_name = f'{exp_name}_toyver{args.toyver}_{task_name}/time{diffusion_steps}gram{gram_scale}{feature_type}_normL{norm_loss}_reg{reg_scale}'
+                                    
+                                    if 'early_stop' in exp_name:
+                                        for early_stop in args.early_stop:
+
+                                            if args.kakao:
+                                                script = f'python scripts/image_sample_nonblind_grammatrix.py --kakao --run --feature_type {feature_type} --gram_scale {gram_scale} --early_stop {early_stop} --diffusion_steps {diffusion_steps} --toyver {args.toyver} --task_config {task_config} --exp_name {exp_name} --reg_scale {reg_scale} --norm_loss {norm_loss} --log_dir /app/outputs -log {log_name} --gpu 0'
+                                            else:
+                                                gpus = waitGPU(args.gpus, 120)
+                                                print("Activate GPUS : ", gpus)
+                                                script = f'python scripts/image_sample_nonblind_grammatrix.py --run --feature_type {feature_type} --gram_scale {gram_scale} --early_stop {early_stop} --diffusion_steps {diffusion_steps} --toyver {args.toyver} --task_config {task_config} --exp_name {exp_name} --reg_scale {reg_scale} --norm_loss {norm_loss} --log_dir {log_dir} -log {log_name} --gpu {gpus[0]}'
+                                            subprocess.call(script, shell=True) 
+                                    else:
+                                        if args.kakao:
+                                            script = f'python scripts/image_sample_nonblind_grammatrix.py --kakao --run --feature_type {feature_type} --gram_scale {gram_scale} --diffusion_steps {diffusion_steps} --toyver {args.toyver} --task_config {task_config} --exp_name {exp_name} --reg_scale {reg_scale} --norm_loss {norm_loss} --log_dir /app/outputs -log {log_name} --gpu 0'
+                                        else:
+                                            gpus = waitGPU(args.gpus, 120)
+                                            print("Activate GPUS : ", gpus)
+                                            script = f'python scripts/image_sample_nonblind_grammatrix.py  --run --feature_type {feature_type} --gram_scale {gram_scale} --diffusion_steps {diffusion_steps} --toyver {args.toyver} --task_config {task_config} --exp_name {exp_name} --reg_scale {reg_scale} --norm_loss {norm_loss} --log_dir {log_dir} -log {log_name} --gpu {gpus[0]}'
+                                        subprocess.call(script, shell=True) 
+                    else:
+              
+                        if args.toyver == 1:
+                            log_dir = os.path.join(args.log_dir, 'toyver1')
+                            log_name = f'{exp_name}_toyver{args.toyver}_{task_name}/time{diffusion_steps}_normL{norm_loss}_reg{reg_scale}'
+                            
+                            if 'early_stop' in exp_name:
+                                for early_stop in args.early_stop:
+
+                                    if args.kakao:
+                                        script = f'python scripts/image_sample_nonblind_grammatrix.py --kakao --run --early_stop {early_stop} --diffusion_steps {diffusion_steps} --toyver {args.toyver} --task_config {task_config} --exp_name {exp_name} --reg_scale {reg_scale} --norm_loss {norm_loss} --log_dir /app/outputs -log {log_name} --gpu 0'
+                                    else:
+                                        gpus = waitGPU(args.gpus, 120)
+                                        print("Activate GPUS : ", gpus)
+                                        script = f'python scripts/image_sample_nonblind_grammatrix.py --run --early_stop {early_stop} --diffusion_steps {diffusion_steps} --toyver {args.toyver} --task_config {task_config} --exp_name {exp_name} --reg_scale {reg_scale} --norm_loss {norm_loss} --log_dir {log_dir} -log {log_name} --gpu {gpus[0]}'
+                                    subprocess.call(script, shell=True) 
+                            else:
+                                if args.kakao:
+                                    script = f'python scripts/image_sample_nonblind_grammatrix.py --kakao --run --diffusion_steps {diffusion_steps} --toyver {args.toyver} --task_config {task_config} --exp_name {exp_name} --reg_scale {reg_scale} --norm_loss {norm_loss} --log_dir /app/outputs -log {log_name} --gpu 0'
+                                else:
+                                    gpus = waitGPU(args.gpus, 120)
+                                    print("Activate GPUS : ", gpus)
+                                    script = f'python scripts/image_sample_nonblind_grammatrix.py  --run --diffusion_steps {diffusion_steps} --toyver {args.toyver} --task_config {task_config} --exp_name {exp_name} --reg_scale {reg_scale} --norm_loss {norm_loss} --log_dir {log_dir} -log {log_name} --gpu {gpus[0]}'
+                                subprocess.call(script, shell=True) 

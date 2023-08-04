@@ -63,6 +63,9 @@ def main():
     data_name = task_config['data']['name'].upper()
     task_name = measure_config['operator']['name']
 
+    if ('no_grad' in args.exp_name) and args.norm_loss > 0:
+        args.norm_loss = - 1. * args.norm_loss
+        
     norm_dict = {"loss":args.norm_loss, "img":args.norm_img, "reg_scale":args.reg_scale, "early_stop":args.early_stop, \
                  "gram_scale": args.gram_scale, \
                 "forward_free":args.forward_free, "forward_free_type":args.forward_free_type}
@@ -305,7 +308,6 @@ def main():
 
         # if i == 2: return
         return
-
 
     logger.log("Completed")
 
