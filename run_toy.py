@@ -39,7 +39,8 @@ parser = argparse.ArgumentParser(description="Baseline Reproduce")
 parser.add_argument('--gpus', default=[5], type=str2list)
 # parser.add_argument('--log_dir', type=str, default='./results_toy/0727_nonBlind_advanced_goodresults')
 # parser.add_argument('--log_dir', type=str, default='./results_toy/0727_nonBlind_cond_nograd')
-parser.add_argument('--log_dir', type=str, default='./results_toy/0727_nonBlind_aftermeeting')
+parser.add_argument('--log_dir', type=str, default='./results_toy/0727_nonBlind_aftermeeting_timescheduling')
+# parser.add_argument('--log_dir', type=str, default='./results_toy/0802_nonBlind')
 
 parser.add_argument('--toyver', type=int, default=2)
 parser.add_argument('--diffusion_steps', type=int, default=['250', '500','1000'])
@@ -47,18 +48,14 @@ parser.add_argument('--early_stop', type=str2list, default=["50", "100", "200"])
 
 parser.add_argument('--norm_loss', type=str2list, default=["1e-3", "1", "5"]) 
 
-# parser.add_argument('--reg_scale', type=str2list, default=["1e-3", "1", "5"]) 
-# parser.add_argument('--reg_scale', type=str2list, default=["1e-3"]) # gpu 5 OK
-# parser.add_argument('--reg_scale', type=str2list, default=["1"])
-parser.add_argument('--reg_scale', type=str2list, default=["5"]) # TODO
-# parser.add_argument('--reg_scale', type=str2list, default=["20"]) # TODO
+parser.add_argument('--reg_scale', type=str2list, default=["1e-3", "1", "100"]) 
 
 parser.add_argument('--forward_free_type', type=str2list, default=["linear_increase", "time_scale"]) # toy2
 parser.add_argument('--forward_free', type=str2list, default=["1e-5", "1e-3", "5e-1", "1e-1", "-0.001", "-0.05", "-0.5"]) # toy2
 
 args = parser.parse_args()
 
-# back-projection condition list:
+# measurement based condition list:
 condF_list = ['condF', 'condF_no_gradF', 'None'] # 3
 condB_list = ['condB', 'condB_no_gradB', 'None'] # 3
 

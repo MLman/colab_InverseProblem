@@ -13,6 +13,8 @@ from piq import LPIPS
 import numpy as np
 import torch as th
 import torchvision.transforms as transforms
+import torchvision.models as models
+
 import matplotlib.pyplot as plt
 
 from util.img_utils import clear_color, mask_generator
@@ -23,6 +25,7 @@ from cm.nn import mean_flat
 from guided_diffusion.condition_methods import get_conditioning_method
 from guided_diffusion.measurements import get_noise, get_operator
 from guided_diffusion.svd_operators import Deblurring
+from guided_diffusion.gram_util import GramModel
 from torchinfo import summary
 import torchvision.utils as vtils
 
@@ -63,11 +66,11 @@ def main():
     data_name = task_config['data']['name'].upper()
     task_name = measure_config['operator']['name']
 
-    if ('no_grad' in args.exp_name) and args.norm_loss > 0:
-        args.norm_loss = - 1. * args.norm_loss
-        
+    # if ('no_grad' in args.exp_name) and args.norm_loss > 0:
+        # args.norm_loss = - 1. * args.norm_loss
+
     norm_dict = {"loss":args.norm_loss, "img":args.norm_img, "reg_scale":args.reg_scale, "early_stop":args.early_stop, \
-                 "gram_scale": args.gram_scale, \
+                 "gram_type": args.gram_type, "reg_content": args.reg_content, "reg_style": args.reg_style, \
                 "forward_free":args.forward_free, "forward_free_type":args.forward_free_type}
 
     # set save directory
@@ -79,9 +82,12 @@ def main():
         mkdir(args.global_result_path)
     else:
         if args.toyver == 1:
-            args.log_suffix = f'{args.log_suffix}/{data_name}_toyver{args.toyver}{args.exp_name}{task_name}/time{args.diffusion_steps}normL{args.norm_loss}_regscale{args.reg_scale}'
-        elif args.toyver == 2:
-            args.log_suffix = f'{args.log_suffix}/{data_name}_toyver{args.toyver}_{task_name}/time{args.diffusion_steps}normimg{args.norm_img}_forfree{args.forward_free_type}{args.forward_free}'
+            if "Gram" in args.exp_name:
+                args.log_suffix = f'{args.log_suffix}/{data_name}_toyver{args.toyver}{args.exp_name}_{task_name}/time{args.diffusion_steps}gram{args.gram_type}{args.feature_type}normL{args.norm_loss}_regscale{args.reg_scale}_style{args.reg_style}_content{args.content}'
+            else:
+                args.log_suffix = f'{args.log_suffix}/{data_name}_toyver{args.toyver}{args.exp_name}{task_name}/time{args.diffusion_steps}normL{args.norm_loss}_regscale{args.reg_scale}'
+        # elif args.toyver == 2:
+            # args.log_suffix = f'{args.log_suffix}/{data_name}_toyver{args.toyver}_{task_name}/time{args.diffusion_steps}normimg{args.norm_img}_forfree{args.forward_free_type}{args.forward_free}'
         # else:
             # args.log_suffix = f'{args.log_suffix}/{data_name}_toyver{args.toyver}_{task_name}/normL{args.norm_loss}'
 
@@ -132,6 +138,12 @@ def main():
     if args.use_fp16:
         model.convert_to_fp16()
     model.eval()
+
+    th.set_default_device(dist_util.dev())
+    # Prepare VGG Network for Gram Matrix
+    # vgg_cnn = models.vgg19(pretrained=True).to(dist_util.dev())
+    # vgg_cnn = vgg_cnn.features.eval()
+    vgg_cnn = models.vgg19(pretrained=True).features.eval()
 
     # Prepare Operator and noise
     if measure_config['operator']['name'] == 'gaussian_blur':
@@ -220,29 +232,37 @@ def main():
 
         x_start = y_n.requires_grad_()
         
-        logger.log("encoding the source images.")
-        noise_restored = diffusion.ddim_reverse_sample_loop(
-            model,
-            image=x_start,
-            operator=operator,
-            clip_denoised=True,
-            original_image=ref_img, # for PSNR, SSIM
-            device=dist_util.dev(),
-            progress=True,
-            use_wandb=args.use_wandb,
-            directory=forward_dir,
-            debug_mode=args.debug_mode,
-            norm=norm_dict,
-            toyver=args.toyver,
-            measurement_cond_fn=measurement_cond_fn,
-            exp_name=args.exp_name,
-    
-        )
-        # plt.imsave(os.path.join(out_path, 'ddim_noise', fname), clear_color(noise_restored))
-        plt.imsave(os.path.join(out_path, f'ddim_noise{fname}'), clear_color(noise_restored))
+        if 'vgg' in args.exp_name:
+            gram_model = GramModel(cnn=vgg_cnn, style_img=y_n, content_img=y_n)
+            gram_model = gram_model.to(dist_util.dev())
+            gram_model.eval()
+            gram_model.requires_grad_(False)
+
+        if args.no_encoding:
+            logger.log(f"Random Noise...")
+            noise_restored = th.randn_like(x_start)
+        else:
+            logger.log("encoding the source images.")
+            noise_restored = diffusion.ddim_reverse_sample_loop(
+                model,
+                image=x_start,
+                operator=operator,
+                clip_denoised=True,
+                original_image=ref_img, # for PSNR, SSIM
+                device=dist_util.dev(),
+                progress=True,
+                use_wandb=args.use_wandb,
+                directory=forward_dir,
+                debug_mode=args.debug_mode,
+                norm=norm_dict,
+                toyver=args.toyver,
+                measurement_cond_fn=measurement_cond_fn,
+                gram_model=gram_model,
+                exp_name=args.exp_name,
+            )
+            plt.imsave(os.path.join(out_path, f'ddim_noise{fname}'), clear_color(noise_restored))
 
         logger.log(f"obtained latent representation for restored images...")
-        
         sample_restored = diffusion.ddim_sample_loop(
             model,
             (args.batch_size, 3, 256, 256),
@@ -259,6 +279,7 @@ def main():
             toyver=args.toyver,
             measurement_cond_fn=measurement_cond_fn,
             y0_measurement=y_measurement,
+            gram_model=gram_model,
             exp_name=args.exp_name
         )
         logger.log(f"obtained reconstructed restored images...")
@@ -333,6 +354,7 @@ def create_argparser():
     
     parser.add_argument('--kakao', action='store_true', default=False)
     parser.add_argument('--use_wandb', action='store_true', default=False)
+    parser.add_argument('--no_encoding', action='store_true', default=False)
     parser.add_argument('--run', action='store_true', default=False)
     parser.add_argument('--debug_mode', action='store_true', default=False)
     parser.add_argument('--diffusion_steps', type=int, default=500)
@@ -341,12 +363,14 @@ def create_argparser():
     parser.add_argument('--norm_img', type=float, default=0.01) 
     parser.add_argument('--norm_loss', type=float, default=0.01) 
     parser.add_argument('--reg_scale', type=float, default=10) 
-    parser.add_argument('--gram_scale', type=float, default=100) 
+    parser.add_argument('--reg_content', type=float, default=1) 
+    parser.add_argument('--reg_style', type=float, default=1000) 
     parser.add_argument('--early_stop', type=int, default=300)
     parser.add_argument('--forward_free', type=float, default=-0.1)
     parser.add_argument('--forward_free_type', type=str, default="linear_increase") # linear_increase, time_scale
     
     parser.add_argument('--feature_type', type=str, default="in_mid_out") # in mid out
+    parser.add_argument('--gram_type', type=str, default="y0hat") # y0hat, yi
 
 
     add_dict_to_argparser(parser, defaults)

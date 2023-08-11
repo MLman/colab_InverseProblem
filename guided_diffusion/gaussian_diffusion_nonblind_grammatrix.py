@@ -621,6 +621,7 @@ class GaussianDiffusion:
             norm=None,
             measurement_cond_fn=None,
             y0_measurement=None,
+            gram_model=None,
             exp_name=None,
     ):
         """
@@ -648,6 +649,7 @@ class GaussianDiffusion:
                 norm=norm,
                 measurement_cond_fn=measurement_cond_fn,
                 y0_measurement=y0_measurement,
+                gram_model=gram_model,
                 exp_name=exp_name,
         ):
             final = sample
@@ -676,6 +678,7 @@ class GaussianDiffusion:
             norm=None,
             measurement_cond_fn=None,
             y0_measurement=None,
+            gram_model=None,
             exp_name=None,
     ):
         """
@@ -695,15 +698,20 @@ class GaussianDiffusion:
             assert NotImplementedError
         
         b, c, h, w = shape[0], shape[1], shape[2], shape[3]
+
+        ##### U-Net based Gram: Fail #####
         time_zero = th.tensor([0] * shape[0], device=device)
         y0_grammatrix = model(y0_measurement, self._scale_timesteps(time_zero))
         G_y0 = model.gram_matrices
+        ##################################
 
         norm_loss = norm['loss']
         reg_scale = norm['reg_scale']
-        gram_scale = norm['gram_scale']
+        gram_type = norm['gram_type']
         early_stop_step = norm['early_stop']
-        
+        reg_content = norm['reg_content']
+        reg_style = norm['reg_style']
+
         if 'early_stop' in exp_name:
             indices = list(range(early_stop_step))[::-1]
         else:
@@ -763,21 +771,52 @@ class GaussianDiffusion:
             y_i_img_t = yi["sample"]
             y_i_img_0hat = yi["pred_xstart"]
     
-            # y0hat_grammatrix = model(y_i_img_0hat, self._scale_timesteps(time_zero))
-            G_yi = model.gram_matrices
-            loss_G = 0.0
-            for k in range(len(G_yi)):
-                loss = F.mse_loss(G_y0[k], G_yi[k])
-                loss_G += loss
-            loss_G = loss_G.mean()
-            print(f"loss_G {loss_G}")
+            # ##### U-Net based Gram: Fail #####
+            # if 'GramB' in exp_name and (i > 0):
+            #     if gram_type == 'y0hat':
+            #         y0hat_grammatrix = model(y_i_img_0hat, self._scale_timesteps(time_zero))
+            #     elif gram_type == 'Hy0hat':
+            #         Hy0hat = operator.A(y_i_img_0hat) # H * y_0_hat
+            #         Hy0hat = Hy0hat.reshape((b, c, h, w))
+            #         ypred_grammatrix = model(Hy0hat, self._scale_timesteps(time_zero))
+                
+            #     G_pred = model.gram_matrices
 
-            loss_blur = get_loss(ori_cleanGT, y_i_img_0hat)
+            #     normG = 0.0
+            #     for k in range(len(G_pred)):
+            #         difference = G_y0[k] - G_pred[k]
+            #         normG += th.linalg.norm(difference)
+            #     norm_grad_G = th.autograd.grad(outputs=normG, inputs=y_prev)[0]
+            # ##################################
+
+            if 'vggGramB' in exp_name and (i > 0):
+                Hy0hat = operator.A(y_i_img_0hat)
+                Hy0hat = Hy0hat.reshape((b, c, h, w))
+                # style_loss = gram_model(Hy0hat) 
+                # gram_loss = reg_style * style_loss
+
+                content_loss, style_loss = gram_model(Hy0hat) 
+                gram_loss = reg_content * content_loss + reg_style * style_loss
+
+                if 'norm' in exp_name:
+                    norm = th.linalg.norm(gram_loss)
+                    norm_grad_G = norm
+                elif 'grad' in exp_name:
+                    norm = th.linalg.norm(gram_loss)
+
+                    if 'grad_y_prev' in exp_name:
+                        norm_grad_G = th.autograd.grad(outputs=norm, inputs=y_prev)[0]
+                    elif 'grad_y0hat' in exp_name:
+                        norm_grad_G = th.autograd.grad(outputs=norm, inputs=y_i_img_0hat)[0]
+                else:
+                    norm_grad_G = gram_loss
+
+                # print(f"style_score {norm_grad_G}")
 
             ########### [Gram Matrix] ##############
-            if 'BefGramB' in exp_name:
-                y_i_img_t = y_i_img_t - loss_G * gram_scale
-                
+            if ('BefvggGramB' in exp_name) and (i > 0):
+                y_i_img_t = y_i_img_t - norm_grad_G * reg_scale_cond
+
             ########### [Conditioning] ###########
             if 'condB' in exp_name:
                 y_i_new_img_t, distance = measurement_cond_fn(x_t=y_i_img_t,
@@ -794,21 +833,27 @@ class GaussianDiffusion:
 
                 H_t_mul_diff = operator.At(y_minus_Hy0hat) # H^T * (y - H*y_0hat)
                 H_t_mul_diff = H_t_mul_diff.reshape((b, c, h, w))
-
-                y_i_new_img_t = y_i_img_t - 2 * H_t_mul_diff * reg_scale_cond
+                
+                d_scale = self.sqrt_alphas_cumprod[int(self._scale_timesteps(i))]
+                
+                if 'div' in exp_name:
+                    y_i_new_img_t = y_i_img_t - 2 * H_t_mul_diff * reg_scale_cond * (1.0 / d_scale)
+                else:
+                    y_i_new_img_t = y_i_img_t - 2 * H_t_mul_diff * reg_scale_cond * d_scale
             
             else:
                 y_i_new_img_t = y_i_img_t
             
-
             ########### [Gram Matrix] ##############
-            if 'AftGramB' in exp_name:
-                y_i_new_img_t = y_i_new_img_t - loss_G * gram_scale
+            if ('AftvggGramB' in exp_name) and (i > 0):
+                y_i_new_img_t = y_i_new_img_t - norm_grad_G * reg_scale_cond
 
             y_prev = y_i_new_img_t.detach_()
             yi["sample"] = y_prev
             yield yi
             
+            loss_blur = get_loss(ori_cleanGT, y_i_img_0hat)
+
             psnr, ssim = 0.0, 0.0
             for idx in range(ori_cleanGT.shape[0]):
                 restored = th.clamp(y_i_img_0hat[idx], -1., 1.).cpu().detach().numpy()
@@ -823,7 +868,8 @@ class GaussianDiffusion:
 
             if use_wandb:
                 wandb_log = {'dec_blur_LPIPS': loss_blur['lpips'], 'dec_blur_L2': loss_blur['l2'], \
-                             'time_scale': time_scale, 'dec_psnr_x0hat': psnr, 'dec_ssim_x0hat': ssim}
+                             'time_scale': time_scale, 'dec_psnr_x0hat': psnr, 'dec_ssim_x0hat': ssim, \
+                            'norm_grad_G': norm_grad_G.mean()}
                 wandb.log(wandb_log)
             if i % 100 == 0:
                 if 'no_gradB' in exp_name:
@@ -898,6 +944,7 @@ class GaussianDiffusion:
             debug_mode=False,
             norm=None,
             measurement_cond_fn=None,
+            gram_model=None,
             exp_name=None,
             fea_storer=None,
             feature_layers=None,
@@ -925,6 +972,7 @@ class GaussianDiffusion:
                     debug_mode=debug_mode,
                     norm=norm,
                     measurement_cond_fn=measurement_cond_fn,
+                    gram_model=gram_model,
                     exp_name=exp_name,
             ):
                 final = sample
@@ -951,6 +999,7 @@ class GaussianDiffusion:
             debug_mode=False,
             norm=None,
             measurement_cond_fn=None,
+            gram_model=None,
             exp_name=None,
     ):
         """
@@ -966,14 +1015,18 @@ class GaussianDiffusion:
         shape = image.shape
         b, c, h, w = shape[0], shape[1], shape[2], shape[3]
 
+        ##### U-Net based Gram: Fail #####
         time_zero = th.tensor([0] * shape[0], device=device)
         y0_grammatrix = model(y0_measurement, self._scale_timesteps(time_zero))
         G_y0 = model.gram_matrices
-        
+        ##################################
+
         norm_loss = norm['loss']
         reg_scale = norm['reg_scale']
-        gram_scale = norm['gram_scale']
+        gram_type = norm['gram_type']
         early_stop_step = norm['early_stop']
+        reg_content = norm['reg_content']
+        reg_style = norm['reg_style']
 
         if 'early_stop' in exp_name:
             indices = list(range(early_stop_step))
@@ -1034,18 +1087,51 @@ class GaussianDiffusion:
             y_i_img_t = yi["sample"] 
             y_i_img_0hat = yi["pred_xstart"] 
 
-            # y0hat_grammatrix = model(y_i_img_0hat, self._scale_timesteps(time_zero))
-            G_yi = model.gram_matrices
-            loss_G = 0.0
-            for k in range(len(G_yi)):
-                loss = F.mse_loss(G_y0[k], G_yi[k])
-                loss_G += loss
-            loss_G = loss_G.mean()
-            print(f"loss_G {loss_G}")
+            # ##### U-Net based Gram: Fail #####
+            # if 'GramF' in exp_name and (i > 0):
+            #     if gram_type == 'y0hat':
+            #         y0hat_grammatrix = model(y_i_img_0hat, self._scale_timesteps(time_zero))
+            #     elif gram_type == 'Hy0hat':
+            #         Hy0hat = operator.A(y_i_img_0hat) # H * y_0_hat
+            #         Hy0hat = Hy0hat.reshape((b, c, h, w))
+            #         ypred_grammatrix = model(Hy0hat, self._scale_timesteps(time_zero))
+
+            #     G_pred = model.gram_matrices
+
+            #     normG = 0.0
+            #     for k in range(len(G_pred)):
+            #         difference = G_y0[k] - G_pred[k]
+            #         normG += th.linalg.norm(difference)
+            #     norm_grad_G = th.autograd.grad(outputs=normG, inputs=y_prev)[0]
+            # ##################################
+
+            if 'vggGramF' in exp_name and (i > 0):
+                Hy0hat = operator.A(y_i_img_0hat)
+                Hy0hat = Hy0hat.reshape((b, c, h, w))
+                # style_loss = gram_model(Hy0hat) 
+                # gram_loss = reg_style * style_loss
+
+                content_loss, style_loss = gram_model(Hy0hat) 
+                gram_loss = reg_content * content_loss + reg_style * style_loss
+
+                if 'norm' in exp_name:
+                    norm = th.linalg.norm(gram_loss)
+                    norm_grad_G = norm
+                elif 'grad' in exp_name:
+                    norm = th.linalg.norm(gram_loss)
+
+                    if 'grad_y_prev' in exp_name:
+                        norm_grad_G = th.autograd.grad(outputs=norm, inputs=y_prev)[0]
+                    elif 'grad_y0hat' in exp_name:
+                        norm_grad_G = th.autograd.grad(outputs=norm, inputs=y_i_img_0hat)[0]
+                else:
+                    norm_grad_G = gram_loss
+
+                # print(f"style_score {norm_grad_G}")
 
             ########### [Gram Matrix] ##############
-            if 'BefGramF' in exp_name:
-                y_i_img_t = y_i_img_t - loss_G * gram_scale
+            if ('BefvggGramF' in exp_name) and (i > 0):
+                y_i_img_t = y_i_img_t - norm_grad_G * reg_scale_cond
 
             ########### [Conditioning] ###########
             if 'condF' in exp_name:
@@ -1063,14 +1149,20 @@ class GaussianDiffusion:
                 
                 H_t_mul_diff = operator.At(y_minus_Hy0hat) # H^T * (y - H*y_0hat)
                 H_t_mul_diff = H_t_mul_diff.reshape((b, c, h, w))
-                
-                y_i_new_img_t = y_i_img_t - 2 * H_t_mul_diff * reg_scale_cond
+
+                d_scale = self.sqrt_alphas_cumprod[int(self._scale_timesteps(i))]
+            
+                if 'div' in exp_name:
+                    y_i_new_img_t = y_i_img_t - 2 * H_t_mul_diff * reg_scale_cond * (1 / d_scale)
+                else:
+                    y_i_new_img_t = y_i_img_t - 2 * H_t_mul_diff * reg_scale_cond * d_scale
+            
             else:
                 y_i_new_img_t = y_i_img_t
 
             ########### [Gram Matrix] ##############
-            if 'AftGramF' in exp_name:
-                y_i_new_img_t = y_i_new_img_t - loss_G * gram_scale
+            if ('AftvggGramF' in exp_name) and (i > 0):
+                y_i_new_img_t = y_i_new_img_t - norm_grad_G * reg_scale_cond
 
             y_prev = y_i_new_img_t.detach_()
             yi["sample"] = y_prev
@@ -1094,7 +1186,8 @@ class GaussianDiffusion:
             if use_wandb:
                 wandb_log = {'enc_LPIPS_bef': loss_before['lpips'], 'enc_L2_bef': loss_before['l2'], \
                              'enc_LPIPS_aft': loss_after['lpips'], 'enc_L2_aft': loss_after['l2'], \
-                             'time_scale': time_scale, 'enc_psnr_x0hat': psnr, 'enc_ssim_x0hat': ssim}
+                             'time_scale': time_scale, 'enc_psnr_x0hat': psnr, 'enc_ssim_x0hat': ssim, \
+                             'norm_grad_G': norm_grad_G.mean()}
                 wandb.log(wandb_log)
  
             if i % 100 == 0:
