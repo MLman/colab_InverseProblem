@@ -775,10 +775,10 @@ class GaussianDiffusion:
             # if 'GramB' in exp_name and (i > 0):
             #     if gram_type == 'y0hat':
             #         y0hat_grammatrix = model(y_i_img_0hat, self._scale_timesteps(time_zero))
-            #     elif gram_type == 'Hy0hat':
-            #         Hy0hat = operator.A(y_i_img_0hat) # H * y_0_hat
-            #         Hy0hat = Hy0hat.reshape((b, c, h, w))
-            #         ypred_grammatrix = model(Hy0hat, self._scale_timesteps(time_zero))
+            #     elif gram_type == 'Ay0hat':
+            #         Ay0hat = operator.A(y_i_img_0hat) # H * y_0_hat
+            #         Ay0hat = Ay0hat.reshape((b, c, h, w))
+            #         ypred_grammatrix = model(Ay0hat, self._scale_timesteps(time_zero))
                 
             #     G_pred = model.gram_matrices
 
@@ -790,13 +790,49 @@ class GaussianDiffusion:
             # ##################################
 
             if 'vggGramB' in exp_name and (i > 0):
-                Hy0hat = operator.A(y_i_img_0hat)
-                Hy0hat = Hy0hat.reshape((b, c, h, w))
-                # style_loss = gram_model(Hy0hat) 
-                # gram_loss = reg_style * style_loss
+                if 'y0hatGram' in exp_name:
+                    Ay0hat = operator.A(y_i_img_0hat).reshape((b, c, h, w))
+         
+                    if 'content':
+                        content_loss, _ = gram_model(y_i_img_0hat) 
+                        _, style_loss = gram_model(Ay0hat) 
+                    elif 'style':
+                        _, style_loss = gram_model(y_i_img_0hat) 
+                        content_loss, _ = gram_model(Ay0hat) 
+                        
+                    gram_loss = reg_content * content_loss + reg_style * style_loss
+                    
+                else: # 0811~0812 Exp
+                    if 'Apinv_Ax' in exp_name: # range space
+                        Ay0hat = operator.A(y_i_img_0hat)
+                        Apinv_Ax = operator.A_pinv(Ay0hat).reshape((b, c, h, w))
+                        op_result = Apinv_Ax
 
-                content_loss, style_loss = gram_model(Hy0hat) 
-                gram_loss = reg_content * content_loss + reg_style * style_loss
+                    elif 'Apinv_Ashapedx' in exp_name: # range space
+                        Ay0hat = operator.A(y_i_img_0hat.reshape(y_i_img_0hat.size(0), -1))
+                        Apinv_Ax = operator.A_pinv(Ay0hat).reshape((b, c, h, w))
+                        op_result = Apinv_Ax
+
+                    elif 'At_Ax' in exp_name:
+                        Ay0hat = operator.A(y_i_img_0hat)
+                        At_Ax = operator.At(Ay0hat).reshape((b, c, h, w))
+                        op_result = At_Ax
+
+                    elif 'At_Ashapedx' in exp_name:
+                        Ay0hat = operator.A(y_i_img_0hat.reshape(y_i_img_0hat.size(0), -1))
+                        At_Ax = operator.At(Ay0hat).reshape((b, c, h, w))
+                        op_result = At_Ax
+
+                    elif 'default_reshaped_x' in exp_name:
+                        Ay0hat = operator.A(y_i_img_0hat.reshape(y_i_img_0hat.size(0), -1)).reshape((b, c, h, w))
+                        op_result = Ay0hat
+
+                    else: # default Ay0hat setting
+                        Ay0hat = operator.A(y_i_img_0hat).reshape((b, c, h, w))
+                        op_result = Ay0hat
+
+                    content_loss, style_loss = gram_model(op_result) 
+                    gram_loss = reg_content * content_loss + reg_style * style_loss
 
                 if 'norm' in exp_name:
                     norm = th.linalg.norm(gram_loss)
@@ -811,7 +847,7 @@ class GaussianDiffusion:
                 else:
                     norm_grad_G = gram_loss
 
-                # print(f"style_score {norm_grad_G}")
+                print(f"gram_score {norm_grad_G}")
 
             ########### [Gram Matrix] ##############
             if ('BefvggGramB' in exp_name) and (i > 0):
@@ -826,12 +862,12 @@ class GaussianDiffusion:
                                                               x_0_hat=y_i_img_0hat,
                                                               reg_scale=reg_scale_cond)
             elif 'no_gradB' in exp_name:
-                Hy0hat = operator.A(y_i_img_0hat) # H * y_0_hat    
-                Hy0hat = Hy0hat.reshape((b, c, h, w))
+                Ay0hat = operator.A(y_i_img_0hat) # H * y_0_hat    
+                Ay0hat = Ay0hat.reshape((b, c, h, w))
 
-                y_minus_Hy0hat = y0_measurement - Hy0hat # y - H*y_0_hat
+                y_minus_Ay0hat = y0_measurement - Ay0hat # y - H*y_0_hat
 
-                H_t_mul_diff = operator.At(y_minus_Hy0hat) # H^T * (y - H*y_0hat)
+                H_t_mul_diff = operator.At(y_minus_Ay0hat) # H^T * (y - H*y_0hat)
                 H_t_mul_diff = H_t_mul_diff.reshape((b, c, h, w))
                 
                 d_scale = self.sqrt_alphas_cumprod[int(self._scale_timesteps(i))]
@@ -873,7 +909,7 @@ class GaussianDiffusion:
                 wandb.log(wandb_log)
             if i % 100 == 0:
                 if 'no_gradB' in exp_name:
-                    vtils.save_image(Hy0hat, f'{directory}nogradB_Hy0hat{i}.png', range=(-1,1), normalize=True)
+                    vtils.save_image(Ay0hat, f'{directory}nogradB_Ay0hat{i}.png', range=(-1,1), normalize=True)
                     vtils.save_image(H_t_mul_diff, f'{directory}nogradB_H_t_mul_diff{i}.png', range=(-1,1), normalize=True)
                 vtils.save_image(y_i_img_0hat, f'{directory}_x_0_hat{i}.png', range=(-1,1), normalize=True)
                 vtils.save_image(y_i_new_img_t, f'{directory}_x_t{i}.png', range=(-1,1), normalize=True)
@@ -1091,10 +1127,10 @@ class GaussianDiffusion:
             # if 'GramF' in exp_name and (i > 0):
             #     if gram_type == 'y0hat':
             #         y0hat_grammatrix = model(y_i_img_0hat, self._scale_timesteps(time_zero))
-            #     elif gram_type == 'Hy0hat':
-            #         Hy0hat = operator.A(y_i_img_0hat) # H * y_0_hat
-            #         Hy0hat = Hy0hat.reshape((b, c, h, w))
-            #         ypred_grammatrix = model(Hy0hat, self._scale_timesteps(time_zero))
+            #     elif gram_type == 'Ay0hat':
+            #         Ay0hat = operator.A(y_i_img_0hat) # H * y_0_hat
+            #         Ay0hat = Ay0hat.reshape((b, c, h, w))
+            #         ypred_grammatrix = model(Ay0hat, self._scale_timesteps(time_zero))
 
             #     G_pred = model.gram_matrices
 
@@ -1106,12 +1142,27 @@ class GaussianDiffusion:
             # ##################################
 
             if 'vggGramF' in exp_name and (i > 0):
-                Hy0hat = operator.A(y_i_img_0hat)
-                Hy0hat = Hy0hat.reshape((b, c, h, w))
-                # style_loss = gram_model(Hy0hat) 
-                # gram_loss = reg_style * style_loss
 
-                content_loss, style_loss = gram_model(Hy0hat) 
+                if 'Apinv_Ax' in exp_name: # range space
+                    raise NotImplementedError
+                    Ay0hat = operator.A(y_i_img_0hat)
+
+
+                    Apinv_Ax = operator.A_pinv(Ay0hat)
+                    # H_funcs.H_pinv(H_funcs.H(torch.ones_like(pinv_y_0)))
+
+
+                # elif 'At_Ax' in exp_name:
+
+   
+
+                else: # default Ay0hat setting
+                    Ay0hat = operator.A(y_i_img_0hat) # Ax
+                    Ay0hat = Ay0hat.reshape((b, c, h, w))
+                    op_result = Ay0hat
+
+
+                content_loss, style_loss = gram_model(op_result) 
                 gram_loss = reg_content * content_loss + reg_style * style_loss
 
                 if 'norm' in exp_name:
@@ -1124,10 +1175,11 @@ class GaussianDiffusion:
                         norm_grad_G = th.autograd.grad(outputs=norm, inputs=y_prev)[0]
                     elif 'grad_y0hat' in exp_name:
                         norm_grad_G = th.autograd.grad(outputs=norm, inputs=y_i_img_0hat)[0]
-                else:
+                
+                elif 'raw' in exp_name:
                     norm_grad_G = gram_loss
 
-                # print(f"style_score {norm_grad_G}")
+                print(f"gram_score {norm_grad_G}")
 
             ########### [Gram Matrix] ##############
             if ('BefvggGramF' in exp_name) and (i > 0):
@@ -1142,12 +1194,12 @@ class GaussianDiffusion:
                                                               x_0_hat=y_i_img_0hat,
                                                               reg_scale=reg_scale_cond)
             elif 'no_gradF' in exp_name:
-                Hy0hat = operator.A(y_i_img_0hat) # H * y_0_hat
-                Hy0hat = Hy0hat.reshape((b, c, h, w))
+                Ay0hat = operator.A(y_i_img_0hat) # H * y_0_hat
+                Ay0hat = Ay0hat.reshape((b, c, h, w))
 
-                y_minus_Hy0hat = y0_measurement - Hy0hat # y - H*y_0_hat (1, 3, 256, 256)
+                y_minus_Ay0hat = y0_measurement - Ay0hat # y - H*y_0_hat (1, 3, 256, 256)
                 
-                H_t_mul_diff = operator.At(y_minus_Hy0hat) # H^T * (y - H*y_0hat)
+                H_t_mul_diff = operator.At(y_minus_Ay0hat) # H^T * (y - H*y_0hat)
                 H_t_mul_diff = H_t_mul_diff.reshape((b, c, h, w))
 
                 d_scale = self.sqrt_alphas_cumprod[int(self._scale_timesteps(i))]
@@ -1192,7 +1244,7 @@ class GaussianDiffusion:
  
             if i % 100 == 0:
                 if 'no_gradF' in exp_name:
-                    vtils.save_image(Hy0hat, f'{directory}nogradF_Hy0hat{i}.png', range=(-1,1), normalize=True)
+                    vtils.save_image(Ay0hat, f'{directory}nogradF_Ay0hat{i}.png', range=(-1,1), normalize=True)
                     vtils.save_image(H_t_mul_diff, f'{directory}nogradF_H_t_mul_diff{i}.png', range=(-1,1), normalize=True)
                 vtils.save_image(y_i_img_0hat, f'{directory}_updated_x_0_hat{i}.png', range=(-1,1), normalize=True)
                 vtils.save_image(y_i_new_img_t, f'{directory}_x_t{i}.png', range=(-1,1), normalize=True)

@@ -233,7 +233,10 @@ def main():
         x_start = y_n.requires_grad_()
         
         if 'vgg' in args.exp_name:
-            gram_model = GramModel(cnn=vgg_cnn, style_img=y_n, content_img=y_n)
+            if 'cleanGT_test' in args.exp_name:
+                gram_model = GramModel(cnn=vgg_cnn, style_img=ref_img, content_img=y_n)
+            else:
+                gram_model = GramModel(cnn=vgg_cnn, style_img=y_n, content_img=y_n)
             gram_model = gram_model.to(dist_util.dev())
             gram_model.eval()
             gram_model.requires_grad_(False)
