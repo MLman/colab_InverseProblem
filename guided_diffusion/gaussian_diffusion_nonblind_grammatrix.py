@@ -793,14 +793,44 @@ class GaussianDiffusion:
                 if 'y0hatGram' in exp_name:
                     Ay0hat = operator.A(y_i_img_0hat).reshape((b, c, h, w))
          
-                    if 'content':
+                    if 'content' in exp_name:
                         content_loss, _ = gram_model(y_i_img_0hat) 
                         _, style_loss = gram_model(Ay0hat) 
-                    elif 'style':
+                    elif 'style' in exp_name:
                         _, style_loss = gram_model(y_i_img_0hat) 
                         content_loss, _ = gram_model(Ay0hat) 
                         
-                    gram_loss = reg_content * content_loss + reg_style * style_loss
+                    
+                    if 'separate' in exp_name:
+                        L_content= reg_content * content_loss
+                        L_style = reg_style * style_loss
+
+                        norm_content = th.linalg.norm(L_content)
+                        norm_style = th.linalg.norm(L_style)
+                        if 'case1' in exp_name:
+                            norm_grad_C = th.autograd.grad(outputs=norm_content, inputs=y_prev)[0]
+                            norm_grad_S = th.autograd.grad(outputs=norm_style, inputs=y_i_img_0hat)[0]
+                        elif 'case2' in exp_name:
+                            norm_grad_C = th.autograd.grad(outputs=norm_content, inputs=y_i_img_0hat)[0]
+                            norm_grad_S = th.autograd.grad(outputs=norm_style, inputs=y_prev)[0]
+                        
+                        norm_grad_G = norm_grad_C + norm_grad_S
+
+                    else:
+                        gram_loss = reg_content * content_loss + reg_style * style_loss
+                        
+                        if 'norm' in exp_name:
+                            norm = th.linalg.norm(gram_loss)
+                            norm_grad_G = norm
+                        elif 'grad' in exp_name:
+                            norm = th.linalg.norm(gram_loss)
+
+                            if 'grad_y_prev' in exp_name:
+                                norm_grad_G = th.autograd.grad(outputs=norm, inputs=y_prev)[0]
+                            elif 'grad_y0hat' in exp_name:
+                                norm_grad_G = th.autograd.grad(outputs=norm, inputs=y_i_img_0hat)[0]
+                        else:
+                            norm_grad_G = gram_loss
                     
                 else: # 0811~0812 Exp
                     if 'Apinv_Ax' in exp_name: # range space
@@ -834,20 +864,20 @@ class GaussianDiffusion:
                     content_loss, style_loss = gram_model(op_result) 
                     gram_loss = reg_content * content_loss + reg_style * style_loss
 
-                if 'norm' in exp_name:
-                    norm = th.linalg.norm(gram_loss)
-                    norm_grad_G = norm
-                elif 'grad' in exp_name:
-                    norm = th.linalg.norm(gram_loss)
+                    if 'norm' in exp_name:
+                        norm = th.linalg.norm(gram_loss)
+                        norm_grad_G = norm
+                    elif 'grad' in exp_name:
+                        norm = th.linalg.norm(gram_loss)
 
-                    if 'grad_y_prev' in exp_name:
-                        norm_grad_G = th.autograd.grad(outputs=norm, inputs=y_prev)[0]
-                    elif 'grad_y0hat' in exp_name:
-                        norm_grad_G = th.autograd.grad(outputs=norm, inputs=y_i_img_0hat)[0]
-                else:
-                    norm_grad_G = gram_loss
+                        if 'grad_y_prev' in exp_name:
+                            norm_grad_G = th.autograd.grad(outputs=norm, inputs=y_prev)[0]
+                        elif 'grad_y0hat' in exp_name:
+                            norm_grad_G = th.autograd.grad(outputs=norm, inputs=y_i_img_0hat)[0]
+                    else:
+                        norm_grad_G = gram_loss
 
-                print(f"gram_score {norm_grad_G}")
+                # print(f"gram_score {norm_grad_G}")
 
             ########### [Gram Matrix] ##############
             if ('BefvggGramB' in exp_name) and (i > 0):
