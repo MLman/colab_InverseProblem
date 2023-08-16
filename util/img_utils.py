@@ -7,7 +7,26 @@ from torch.autograd import Variable
 import matplotlib.pyplot as plt
 from motionblur.motionblur import Kernel
 from .fastmri_utils import fft2c_new, ifft2c_new
+from PIL import Image, ImageDraw, ImageFont
 
+
+def add_caption_to_image(img_path, caption1, caption2, font_path=None):
+
+    img = Image.open(img_path)
+    font_size = 18
+    font_color = (0, 0, 0) 
+    x, y = 10, img.height - 40
+
+    if font_path:
+        font = ImageFont.truetype(font_path, font_size)
+    else:
+        font = ImageFont.load_default()
+    
+    draw = ImageDraw.Draw(img)
+    draw.text((x, y), caption1, font=font, fill=font_color)
+    draw.text((x, y+20), caption2, font=font, fill=font_color)
+    
+    img.save(img_path)
 
 """
 Helper functions for new types of inverse problems

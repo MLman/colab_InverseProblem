@@ -81,10 +81,15 @@ def main():
         args.global_result_path = os.path.join(args.ori_log_dir, 'all_results')
         mkdir(args.global_result_path)
     else:
-        if "Gram" in args.exp_name:
-            args.log_suffix = f'{args.log_suffix}/{data_name}_toyver{args.toyver}{args.exp_name}_{task_name}/time{args.diffusion_steps}gram{args.gram_type}{args.feature_type}normL{args.norm_loss}_regscale{args.reg_scale}_style{args.reg_style}_content{args.content}'
-        else:
-            args.log_suffix = f'{args.log_suffix}/{data_name}_toyver{args.toyver}{args.exp_name}{task_name}/time{args.diffusion_steps}normL{args.norm_loss}_regscale{args.reg_scale}'
+        if args.toyver == 1:
+            if "Gram" in args.exp_name:
+                args.log_suffix = f'{args.log_suffix}/{data_name}_toyver{args.toyver}{args.exp_name}_{task_name}/time{args.diffusion_steps}gram{args.gram_type}{args.feature_type}normL{args.norm_loss}_regscale{args.reg_scale}_style{args.reg_style}_content{args.content}'
+            else:
+                args.log_suffix = f'{args.log_suffix}/{data_name}_toyver{args.toyver}{args.exp_name}{task_name}/time{args.diffusion_steps}normL{args.norm_loss}_regscale{args.reg_scale}'
+        # elif args.toyver == 2:
+            # args.log_suffix = f'{args.log_suffix}/{data_name}_toyver{args.toyver}_{task_name}/time{args.diffusion_steps}normimg{args.norm_img}_forfree{args.forward_free_type}{args.forward_free}'
+        # else:
+            # args.log_suffix = f'{args.log_suffix}/{data_name}_toyver{args.toyver}_{task_name}/normL{args.norm_loss}'
 
     if 'early_stop' in args.exp_name:
         replace_name = f'early_stop{args.early_stop}'
@@ -237,36 +242,15 @@ def main():
             gram_model.requires_grad_(False)
         else:
             gram_model = None
+            
+        logger.log(f"DDPM Sampling...")
+        
+        noise = th.randn_like(x_start)
 
-        if args.no_encoding:
-            logger.log(f"Random Noise...")
-            noise_restored = th.randn_like(x_start)
-        else:
-            logger.log("encoding the source images.")
-            noise_restored = diffusion.ddim_reverse_sample_loop(
-                model,
-                image=x_start,
-                operator=operator,
-                clip_denoised=True,
-                original_image=ref_img, # for PSNR, SSIM
-                device=dist_util.dev(),
-                progress=True,
-                use_wandb=args.use_wandb,
-                directory=forward_dir,
-                debug_mode=args.debug_mode,
-                norm=norm_dict,
-                toyver=args.toyver,
-                measurement_cond_fn=measurement_cond_fn,
-                gram_model=gram_model,
-                exp_name=args.exp_name,
-            )
-            plt.imsave(os.path.join(out_path, f'ddim_noise{fname}'), clear_color(noise_restored))
-
-        logger.log(f"obtained latent representation for restored images...")
-        sample_restored = diffusion.ddim_sample_loop(
+        sample_restored = diffusion.p_sample_loop(
             model,
             (args.batch_size, 3, 256, 256),
-            noise=noise_restored,
+            noise=noise,
             operator=operator,
             clip_denoised=True,
             device=dist_util.dev(),
@@ -276,7 +260,6 @@ def main():
             original_image=ref_img,
             debug_mode=args.debug_mode,
             norm=norm_dict,
-            toyver=args.toyver,
             measurement_cond_fn=measurement_cond_fn,
             y0_measurement=y_measurement,
             gram_model=gram_model,
@@ -360,7 +343,6 @@ def create_argparser():
     
     parser.add_argument('--kakao', action='store_true', default=False)
     parser.add_argument('--use_wandb', action='store_true', default=False)
-    parser.add_argument('--no_encoding', action='store_true', default=False)
     parser.add_argument('--run', action='store_true', default=False)
     parser.add_argument('--debug_mode', action='store_true', default=False)
     parser.add_argument('--diffusion_steps', type=int, default=500)
