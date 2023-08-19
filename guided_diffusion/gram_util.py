@@ -88,11 +88,13 @@ class GramModel(nn.Module):
 
         model = nn.Sequential(self.normalization)
         
+        conv_name_list = []
         i = 0  # increment every time we see a conv
         for layer in cnn.children():
             if isinstance(layer, nn.Conv2d):
                 i += 1
                 name = 'conv_{}'.format(i)
+                conv_name_list.append(name)
             elif isinstance(layer, nn.ReLU):
                 name = 'relu_{}'.format(i)
                 # The in-place version doesn't play very nicely with the ``ContentLoss``
@@ -128,6 +130,7 @@ class GramModel(nn.Module):
                 break
 
         self.model = model[:(i + 1)]
+        self.conv_name_list = conv_name_list
         self.content_losses = content_losses
         self.style_losses = style_losses
 

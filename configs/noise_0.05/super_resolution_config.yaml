@@ -2,6 +2,7 @@ conditioning:
   method: ps
   params:
     scale: 0.3
+    task_type: SRConv
 
 data:
   name: ffhq

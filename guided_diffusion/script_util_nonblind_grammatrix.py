@@ -3,7 +3,7 @@ import inspect
 
 from . import gaussian_diffusion_nonblind_grammatrix as gd
 from .respace_nonblind_grammatrix import SpacedDiffusion, space_timesteps
-from .unet_grammatrix import UNetModel
+from .unet import SuperResModel, UNetModel, EncoderUNetModel
 
 NUM_CLASSES = 1000
 
@@ -199,7 +199,6 @@ def create_model_and_diffusion(
     resblock_updown,
     use_fp16,
     use_new_attention_order,
-    feature_type,
 ):
     model = create_model(
         image_size,
@@ -218,7 +217,6 @@ def create_model_and_diffusion(
         resblock_updown=resblock_updown,
         use_fp16=use_fp16,
         use_new_attention_order=use_new_attention_order,
-        feature_type=feature_type,
     )
     diffusion = create_gaussian_diffusion(
         steps=diffusion_steps,
@@ -288,7 +286,6 @@ def create_model(
         use_scale_shift_norm=use_scale_shift_norm,
         resblock_updown=resblock_updown,
         use_new_attention_order=use_new_attention_order,
-        feature_type=feature_type,
     )
 
 

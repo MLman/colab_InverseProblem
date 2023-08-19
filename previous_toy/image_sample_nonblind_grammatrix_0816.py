@@ -57,53 +57,58 @@ def mkdir(path):
     if not os.path.exists(path):
         os.makedirs(path)
 
-def list_of_strings(arg):
-    return arg.split(',')
-
 def main():
     args = create_argparser().parse_args()
     set_random_seed(args.seed)
 
     task_config = load_yaml(args.task_config)
     measure_config = task_config['measurement']
+    data_name = task_config['data']['name'].upper()
     task_name = measure_config['operator']['name']
 
-    norm_dict = {"loss":args.norm_loss, "reg_dps":args.reg_dps, "reg_style":args.reg_style, "reg_content":args.reg_content, \
-                 }
-        
-    if args.log_suffix is not None:
-        args.log_suffix = f'{args.log_suffix}_{args.exp_name}'
-    
-    args.sub_directory = f'{task_name}_toyver{args.toyver}/{args.exp_name}/time{args.diffusion_steps}normL{args.norm_loss}'
-    
-    if "Gram" in args.exp_name:
-        lay_sty = '_'.join(args.layer_style)
-        lay_con = '_'.join(args.layer_content)
-        args.log_suffix = f'{args.sub_directory}/laySty{lay_sty}_layCon{lay_con}/regDPS{args.reg_dps}regSty{args.reg_style}_regCon{args.reg_content}'
-    else:
-        args.log_suffix = args.sub_directory 
+    # if ('no_grad' in args.exp_name) and args.norm_loss > 0:
+        # args.norm_loss = - 1. * args.norm_loss
+
+    norm_dict = {"loss":args.norm_loss, "img":args.norm_img, "reg_scale":args.reg_scale, "early_stop":args.early_stop, \
+                 "gram_type": args.gram_type, "reg_content": args.reg_content, "reg_style": args.reg_style, \
+                "forward_free":args.forward_free, "forward_free_type":args.forward_free_type}
 
     # set save directory
+    args.ori_logsuffix = args.log_suffix
+    args.ori_log_dir = args.log_dir
     if args.run:
-        args.global_result_path = os.path.join(args.log_dir, 'total_results')
+        args.log_suffix = args.log_suffix
+        args.global_result_path = os.path.join(args.ori_log_dir, 'all_results')
         mkdir(args.global_result_path)
-        
-        args.sub_result_path = os.path.join(args.sub_directory, 'sub_results')
-        mkdir(args.sub_result_path)
+    else:
+        if "Gram" in args.exp_name:
+            args.log_suffix = f'{args.log_suffix}/{data_name}_toyver{args.toyver}{args.exp_name}_{task_name}/time{args.diffusion_steps}gram{args.gram_type}{args.feature_type}normL{args.norm_loss}_regscale{args.reg_scale}_style{args.reg_style}_content{args.content}'
+        else:
+            args.log_suffix = f'{args.log_suffix}/{data_name}_toyver{args.toyver}{args.exp_name}{task_name}/time{args.diffusion_steps}normL{args.norm_loss}_regscale{args.reg_scale}'
+
+    if 'early_stop' in args.exp_name:
+        replace_name = f'early_stop{args.early_stop}'
+        args.log_suffix = args.log_suffix.replace('early_stop', replace_name)
 
     args.log_dir = os.path.join(args.log_dir, args.log_suffix)
     args.save_dir = args.log_dir
-    mkdir(args.save_dir)
-    
-    dist_util.setup_dist(args.gpu)
-    logger.configure(dir=args.save_dir)
 
     if args.kakao:
         model_path = args.model_path.split('/')[-1]
         args.model_path = os.path.join('/app/input/dataset/dps/dps-checkpoint', model_path)
 
+    mkdir(args.save_dir)
+    
+    dist_util.setup_dist(args.gpu)
+    # logger.configure(dir=args.save_dir, format_strs=['stdout','log','csv','tensorboard'], log_suffix=args.ori_logsuffix)
+    logger.configure(dir=args.save_dir)
+
     logger.log("creating model and diffusion...")
-    if 'ffhq' in args.model_path:
+    if 'afhq' in args.model_path:
+        image_dict = args_to_dict(args, model_and_diffusion_defaults().keys())
+        image_dict.update(model_and_diffusion_defaults())
+        args.wandb_table = 'Model:AFHQ'
+    elif 'ffhq' in args.model_path:
         image_dict = args_to_dict(args, ffhq_model_and_diffusion_defaults().keys())
         image_dict.update(ffhq_model_and_diffusion_defaults())
         args.wandb_table = 'Model:FFHQ'
@@ -114,7 +119,7 @@ def main():
     else:
         NotImplementedError()
 
-    diffusion_dict = {'diffusion_steps':args.diffusion_steps}
+    diffusion_dict = {'diffusion_steps':args.diffusion_steps, 'feature_type':args.feature_type}
     image_dict.update(diffusion_dict)
 
     model, diffusion = create_model_and_diffusion(
@@ -176,9 +181,12 @@ def main():
     measurement_cond_fn = cond_method.conditioning
     logger.info(f"Conditioning method : {task_config['conditioning']['method']}")
 
+
     # Working directory
     out_path = os.path.join(args.save_dir, measure_config['operator']['name'])
     os.makedirs(out_path, exist_ok=True)
+    # for img_dir in ['input', 'recon', 'progress', 'label', 'ddim_noise']:
+    #     os.makedirs(os.path.join(out_path, img_dir), exist_ok=True)
 
     # Prepare dataloader
     data_config = task_config['data']
@@ -238,87 +246,66 @@ def main():
 
         x_start = y_n.requires_grad_()
         
-        if 'Gram' in args.exp_name:
-            if 'cleanGT' in args.exp_name:
-                gram_model = GramModel(cnn=vgg_cnn, style_img=ref_img, content_img=ref_img, content_layers=args.layer_content, style_layers=args.layer_style)
+        if 'vgg' in args.exp_name:
+            if 'cleanGT_test' in args.exp_name:
+                gram_model = GramModel(cnn=vgg_cnn, style_img=ref_img, content_img=y_n)
             else:
-                gram_model = GramModel(cnn=vgg_cnn, style_img=y_n, content_img=y_n, content_layers=args.layer_content, style_layers=args.layer_style)
+                gram_model = GramModel(cnn=vgg_cnn, style_img=y_n, content_img=y_n)
             gram_model = gram_model.to(dist_util.dev())
             gram_model.eval()
             gram_model.requires_grad_(False)
         else:
             gram_model = None
-            
-        if args.ddpm:
-            logger.log(f"############ DDPM ############")
-            
-            noise = th.randn(1, 3, 256, 256, device=dist_util.dev())
-            sample_restored = diffusion.p_sample_loop(
-                model,
-                (args.batch_size, 3, 256, 256),
-                noise=noise,
-                operator=operator,
-                clip_denoised=True,
-                device=dist_util.dev(),
-                progress=True,
-                use_wandb=args.use_wandb,
-                directory=backward_dir,
-                original_image=ref_img,
-                debug_mode=args.debug_mode,
-                norm=norm_dict,
-                measurement_cond_fn=measurement_cond_fn,
-                y0_measurement=y_measurement,
-                gram_model=gram_model,
-                exp_name=args.exp_name
-            )
-        else:
-            logger.log(f"!!!!!!!!!!! DDIM !!!!!!!!!!!")
-            
-            if args.no_encoding:
-                logger.log(f"Random Noise...")
+
+        if args.no_encoding:
+            logger.log(f"Random Noise...")
+            if measure_config['operator']['name'] == 'super_resolution':
                 noise_restored = th.randn(1, 3, 256, 256, device=dist_util.dev())
             else:
-                logger.log("Reverse DDIM: encoding the source images.")
-                noise_restored = diffusion.ddim_reverse_sample_loop(
-                    model,
-                    image=x_start,
-                    operator=operator,
-                    clip_denoised=True,
-                    original_image=ref_img, # for PSNR, SSIM
-                    device=dist_util.dev(),
-                    progress=True,
-                    use_wandb=args.use_wandb,
-                    directory=forward_dir,
-                    debug_mode=args.debug_mode,
-                    norm=norm_dict,
-                    toyver=args.toyver,
-                    measurement_cond_fn=measurement_cond_fn,
-                    gram_model=gram_model,
-                    exp_name=args.exp_name,
-                )
-                logger.log(f"obtained latent representation for restored images...")
-            plt.imsave(os.path.join(out_path, f'ddim_noise{fname}'), clear_color(noise_restored))
-            
-            sample_restored = diffusion.ddim_sample_loop(
+                noise_restored = th.randn_like(x_start)
+        else:
+            logger.log("encoding the source images.")
+            noise_restored = diffusion.ddim_reverse_sample_loop(
                 model,
-                (args.batch_size, 3, 256, 256),
-                noise=noise_restored,
+                image=x_start,
                 operator=operator,
                 clip_denoised=True,
+                original_image=ref_img, # for PSNR, SSIM
                 device=dist_util.dev(),
                 progress=True,
                 use_wandb=args.use_wandb,
-                directory=backward_dir,
-                original_image=ref_img,
+                directory=forward_dir,
                 debug_mode=args.debug_mode,
                 norm=norm_dict,
                 toyver=args.toyver,
                 measurement_cond_fn=measurement_cond_fn,
-                y0_measurement=y_measurement,
                 gram_model=gram_model,
-                exp_name=args.exp_name
+                exp_name=args.exp_name,
             )
-            logger.log(f"obtained reconstructed restored images...")
+            plt.imsave(os.path.join(out_path, f'ddim_noise{fname}'), clear_color(noise_restored))
+
+        logger.log(f"obtained latent representation for restored images...")
+        sample_restored = diffusion.ddim_sample_loop(
+            model,
+            (args.batch_size, 3, 256, 256),
+            noise=noise_restored,
+            operator=operator,
+            clip_denoised=True,
+            device=dist_util.dev(),
+            progress=True,
+            use_wandb=args.use_wandb,
+            directory=backward_dir,
+            original_image=ref_img,
+            debug_mode=args.debug_mode,
+            norm=norm_dict,
+            toyver=args.toyver,
+            measurement_cond_fn=measurement_cond_fn,
+            y0_measurement=y_measurement,
+            gram_model=gram_model,
+            exp_name=args.exp_name
+        )
+        logger.log(f"obtained reconstructed restored images...")
+        # plt.imsave(os.path.join(out_path, 'recon', fname), clear_color(sample_restored))
         plt.imsave(os.path.join(out_path, f'Recon{fname}'), clear_color(sample_restored))
 
         l2_loss = (ref_img - sample_restored) ** 2
@@ -346,9 +333,11 @@ def main():
         if args.use_wandb:
             wandb.log(loss_dict)
 
-        results = f'{i}th iter --->' + "[PSNR]: %.4f, [SSIM]: %.4f, [L2 loss]: %.4f, [LPIPS loss]: %.4f"% (psnr, ssim, l2_loss, lpips_loss) + '\n'
-        logger.log(results)
-        
+        with open(os.path.join(args.save_dir,'results.txt'),'a') as f:
+            results = f'{i}th iter --->' + "[PSNR]: %.4f, [SSIM]: %.4f, [L2 loss]: %.4f, [LPIPS loss]: %.4f"% (psnr, ssim, l2_loss, lpips_loss) + '\n'
+            print(results)
+            f.write(results)
+
         if args.run:
             dir_list = args.log_suffix.split('/')
             recon_name = f'{dir_list[0]}{dir_list[1]}'
@@ -360,16 +349,13 @@ def main():
 
             add_caption_to_image(img_path, caption1, caption2, font_path='/home/sojin/NaverNanumSquare/NanumFontSetup_TTF_SQUARE/NanumSquareB.ttf')
 
-            with open(os.path.join(args.global_result_path,'total_results.txt'),'a') as f:
-                results = f'{recon_name}\n' + "[PSNR]: %.4f, [SSIM]: %.4f, [L2 loss]: %.4f, [LPIPS loss]: %.4f"% (psnr, ssim, l2_loss, lpips_loss) + '\n\n'
-                f.write(results)
-                
-            with open(os.path.join(args.sub_result_path,'sub_results.txt'),'a') as f:
+            with open(os.path.join(args.global_result_path,'all_results.txt'),'a') as f:
                 results = f'{recon_name}\n' + "[PSNR]: %.4f, [SSIM]: %.4f, [L2 loss]: %.4f, [LPIPS loss]: %.4f"% (psnr, ssim, l2_loss, lpips_loss) + '\n\n'
                 f.write(results)
 
         if args.debug_mode and i ==0: return
 
+        # if i == 2: return
         return
 
     logger.log("Completed")
@@ -386,30 +372,34 @@ def create_argparser():
     parser = argparse.ArgumentParser()
     
     parser.add_argument('--gpu', type=str, default='6')
+    # parser.add_argument('--model_config', type=str, default='configs/ffhq_model_config.yaml')
     parser.add_argument('--task_config', type=str, default='configs/noise_0.05/gaussian_deblur_config.yaml')
 
     parser.add_argument('--exp_name', type=str, default='None')
     parser.add_argument('--log_dir', type=str, default='./results_toy/0801ddebug')
-    parser.add_argument('-log','--log_suffix', type=str) 
+    parser.add_argument('-log','--log_suffix', type=str, required=True) # Experiment name, starts with tb(tesorboard) ->  tb_exp1
     parser.add_argument('--model_path', type=str, default='./models/ffhq_1k/ffhq_10m.pt')
     
     parser.add_argument('--kakao', action='store_true', default=False)
     parser.add_argument('--use_wandb', action='store_true', default=False)
     parser.add_argument('--no_encoding', action='store_true', default=False)
-    parser.add_argument('--ddpm', action='store_true', default=False)
     parser.add_argument('--run', action='store_true', default=False)
     parser.add_argument('--debug_mode', action='store_true', default=False)
-    
     parser.add_argument('--diffusion_steps', type=int, default=500)
     parser.add_argument('--toyver', type=int, default=1)
 
+    parser.add_argument('--norm_img', type=float, default=0.01) 
     parser.add_argument('--norm_loss', type=float, default=0.01) 
-    parser.add_argument('--reg_dps', type=float, default=1) 
-    parser.add_argument('--reg_style', type=float, default=1000) 
+    parser.add_argument('--reg_scale', type=float, default=10) 
     parser.add_argument('--reg_content', type=float, default=1) 
+    parser.add_argument('--reg_style', type=float, default=1000) 
+    parser.add_argument('--early_stop', type=int, default=300)
+    parser.add_argument('--forward_free', type=float, default=-0.1)
+    parser.add_argument('--forward_free_type', type=str, default="linear_increase") # linear_increase, time_scale
     
-    parser.add_argument('--layer_style', type=list, default=['conv_1', 'conv_2', 'conv_3', 'conv_4', 'conv_5']) 
-    parser.add_argument('--layer_content', type=list, default=['conv_4']) 
+    parser.add_argument('--feature_type', type=str, default="in_mid_out") # in mid out
+    parser.add_argument('--gram_type', type=str, default="y0hat") # y0hat, yi
+
 
     add_dict_to_argparser(parser, defaults)
     return parser

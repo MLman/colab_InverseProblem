@@ -27,11 +27,15 @@ class ConditioningMethod(ABC):
     def project(self, data, noisy_measurement, **kwargs):
         return self.operator.project(data=data, measurement=noisy_measurement, **kwargs)
     
-    def grad_and_value(self, x_prev, x_0_hat, measurement, **kwargs):
+    def grad_and_value(self, x_prev, x_0_hat, measurement, task_type=None, **kwargs):
         if self.noiser.__name__ == 'gaussian':
             # difference = measurement - self.operator.forward(x_0_hat, **kwargs)
             shape = x_0_hat.shape
-            difference = measurement - self.operator.A(x_0_hat).view(shape[0], shape[1], shape[2], shape[3])
+        
+            if task_type == 'SRConv':
+                difference = measurement - self.operator.A(x_0_hat).view(shape[0], shape[1], shape[2]//self.operator.ratio, shape[3]//self.operator.ratio)
+            else:
+                difference = measurement - self.operator.A(x_0_hat).view(shape[0], shape[1], shape[2], shape[3])
             norm = torch.linalg.norm(difference)
             norm_grad = torch.autograd.grad(outputs=norm, inputs=x_prev)[0]
         
@@ -85,9 +89,10 @@ class PosteriorSampling(ConditioningMethod):
     def __init__(self, operator, noiser, **kwargs):
         super().__init__(operator, noiser)
         self.scale = kwargs.get('scale', 1.0)
+        self.task_type = kwargs.get('task_type', None)
 
     def conditioning(self, x_prev, x_t, x_0_hat, measurement, reg_scale, **kwargs):
-        norm_grad, norm = self.grad_and_value(x_prev=x_prev, x_0_hat=x_0_hat, measurement=measurement, **kwargs)
+        norm_grad, norm = self.grad_and_value(x_prev=x_prev, x_0_hat=x_0_hat, measurement=measurement, task_type=self.task_type, **kwargs)
         x_t -= norm_grad * reg_scale
         return x_t, norm
     

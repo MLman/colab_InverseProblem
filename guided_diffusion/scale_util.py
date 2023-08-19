@@ -11,7 +11,7 @@ def make_scale_dict(exp_name):
         scale_dict['content'] = 'time'
     elif 'contentR' in exp_name:
         scale_dict['content'] = 'reversed'
-    elif 'contentR' in exp_name:
+    elif 'contentE' in exp_name:
         scale_dict['content'] = 'exp'
     elif 'contentN' in exp_name:
         scale_dict['content'] = 'None'
@@ -22,7 +22,7 @@ def make_scale_dict(exp_name):
         scale_dict['style'] = 'time'
     elif 'styleR' in exp_name:
         scale_dict['style'] = 'reversed'
-    elif 'styleR' in exp_name:
+    elif 'styleE' in exp_name:
         scale_dict['style'] = 'exp'
     elif 'styleN' in exp_name:
         scale_dict['style'] = 'None'
