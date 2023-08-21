@@ -498,9 +498,8 @@ class GaussianDiffusion:
         :return: a non-differentiable batch of samples.
         """
         final = None
+
         if toyver == 1:
-            raise NotImplementedError
-            
             for sample in self.p_sample_loop_progressive_ver1(
                     model,
                     operator,
@@ -524,8 +523,8 @@ class GaussianDiffusion:
             ):
                 final = sample
                 
-        elif toyver == 2:
-            raise NotImplementedError
+        # elif toyver == 2:
+        #     raise NotImplementedError
             
         return final["sample"]
 
@@ -563,17 +562,12 @@ class GaussianDiffusion:
             device = next(model.parameters()).device
         assert isinstance(shape, (tuple, list))
         if noise is not None:
-            y_prev = noise
+            x_prev = noise
             ori_cleanGT = original_image
         else:
-            y_prev = th.randn(*shape, device=device)
+            x_prev = th.randn(*shape, device=device)
+            
         indices = list(range(self.num_timesteps))[::-1]
-
-        if progress:
-            # Lazy import so that we don't depend on tqdm.
-            from tqdm.auto import tqdm
-
-            indices = tqdm(indices)
 
         if operator.__class__.__name__ == 'SRConv':
             b, c, h, w = shape[0], shape[1], shape[2]//operator.ratio, shape[3]//operator.ratio
@@ -581,196 +575,71 @@ class GaussianDiffusion:
             b, c, h, w = shape[0], shape[1], shape[2], shape[3]
 
         norm_loss = norm['loss']
-        reg_scale = norm['reg_scale']
-        gram_type = norm['gram_type']
-        early_stop_step = norm['early_stop']
-        reg_content = norm['reg_content']
+        reg_dps = norm['reg_dps']
         reg_style = norm['reg_style']
+        reg_content = norm['reg_content']
+        
+        if progress:
+            # Lazy import so that we don't depend on tqdm.
+            from tqdm.auto import tqdm
+
+            indices = tqdm(indices)
 
         for i in indices:
             t = th.tensor([i] * shape[0], device=device)
             # Remove with th.no_grad():
             
-            y_prev = y_prev.requires_grad_()
+            x_prev = x_prev.requires_grad_()
             
             if (exp_name is not None) and ("time" in exp_name): 
                 time_scale = th.from_numpy(self.sqrt_alphas_cumprod).to(device)[int(self._scale_timesteps(i))].float()
             elif (exp_name is not None) and ("reversed" in exp_name):
                 time_idx = self.num_timesteps - i - 1
                 time_scale = th.from_numpy(self.sqrt_alphas_cumprod).to(device)[int(self._scale_timesteps(time_idx))].float()
-                time_scale *= reg_scale
-            elif (exp_name is not None) and ("exp" in exp_name):
-                if 'early_stop' in exp_name:
-                    m1 = early_stop_step
-                else:
-                    m1 = self.num_timesteps // 4
-                m2 = self.num_timesteps - m1
-                
-                if i < m1:
-                    if 'oriexp' in exp_name:
-                        time_scale = np.exp(-((i-m1)**2)/reg_scale)
-                    else:
-                        time_scale = np.exp((i-m1)*reg_scale)
-                elif i < m2:
-                    time_scale = 1.0
-                else:
-                    if 'oriexp' in exp_name:
-                        time_scale = np.exp(-((i-m2)**2)/reg_scale)
-                    else:
-                        time_scale = np.exp((m2-i)*reg_scale)
             else:
                 time_scale = 1.0            
             print("time_scale %.4f" %(time_scale))
-            
+                
             reg_scale_cond = time_scale * norm_loss
             
-            yi = self.p_sample(
+            xi = self.p_sample(
                 model,
-                y_prev,
+                x_prev,
                 t,
                 clip_denoised=clip_denoised,
                 denoised_fn=denoised_fn,
                 cond_fn=cond_fn,
                 model_kwargs=model_kwargs,
             )
-            y_i_img_t = yi["sample"]
-            y_i_img_0hat = yi["pred_xstart"]
+            x_i_img_t = xi["sample"]
+            x_i_img_0hat = xi["pred_xstart"]
             
-            
-            if 'vggGramB' in exp_name and (i > 0):
-                if 'y0hatGram' in exp_name:
-                    Ay0hat = operator.A(y_i_img_0hat).reshape((b, c, h, w))
-         
-                    if 'content' in exp_name:
-                        content_loss, _ = gram_model(y_i_img_0hat) 
-                        _, style_loss = gram_model(Ay0hat) 
-                    elif 'style' in exp_name:
-                        _, style_loss = gram_model(y_i_img_0hat) 
-                        content_loss, _ = gram_model(Ay0hat) 
-                        
-                    
-                    if 'separate' in exp_name:
-                        L_content= reg_content * content_loss
-                        L_style = reg_style * style_loss
+            Ax0hat = operator.A(x_i_img_0hat).reshape((b, c, h, w))
 
-                        norm_content = th.linalg.norm(L_content)
-                        norm_style = th.linalg.norm(L_style)
-                        if 'case1' in exp_name:
-                            norm_grad_C = th.autograd.grad(outputs=norm_content, inputs=y_prev)[0]
-                            norm_grad_S = th.autograd.grad(outputs=norm_style, inputs=y_i_img_0hat)[0]
-                        elif 'case2' in exp_name:
-                            norm_grad_C = th.autograd.grad(outputs=norm_content, inputs=y_i_img_0hat)[0]
-                            norm_grad_S = th.autograd.grad(outputs=norm_style, inputs=y_prev)[0]
-                        
-                        norm_grad_G = norm_grad_C + norm_grad_S
+            L_content, L_style, L_dps = 0.0, 0.0, 0.0
 
-                    else:
-                        gram_loss = reg_content * content_loss + reg_style * style_loss
-                        
-                        if 'norm' in exp_name:
-                            norm = th.linalg.norm(gram_loss)
-                            norm_grad_G = norm
-                        elif 'grad' in exp_name:
-                            norm = th.linalg.norm(gram_loss)
+            if 'GramB' in exp_name:
+                L_content, L_style = gram_model(Ax0hat) 
 
-                            if 'grad_y_prev' in exp_name:
-                                norm_grad_G = th.autograd.grad(outputs=norm, inputs=y_prev)[0]
-                            elif 'grad_y0hat' in exp_name:
-                                norm_grad_G = th.autograd.grad(outputs=norm, inputs=y_i_img_0hat)[0]
-                        else:
-                            norm_grad_G = gram_loss
-                    
-                else: # 0811~0812 Exp
-                    if 'Apinv_Ax' in exp_name: # range space
-                        Ay0hat = operator.A(y_i_img_0hat)
-                        Apinv_Ax = operator.A_pinv(Ay0hat).reshape((b, c, h, w))
-                        op_result = Apinv_Ax
-
-                    elif 'Apinv_Ashapedx' in exp_name: # range space
-                        Ay0hat = operator.A(y_i_img_0hat.reshape(y_i_img_0hat.size(0), -1))
-                        Apinv_Ax = operator.A_pinv(Ay0hat).reshape((b, c, h, w))
-                        op_result = Apinv_Ax
-
-                    elif 'At_Ax' in exp_name:
-                        Ay0hat = operator.A(y_i_img_0hat)
-                        At_Ax = operator.At(Ay0hat).reshape((b, c, h, w))
-                        op_result = At_Ax
-
-                    elif 'At_Ashapedx' in exp_name:
-                        Ay0hat = operator.A(y_i_img_0hat.reshape(y_i_img_0hat.size(0), -1))
-                        At_Ax = operator.At(Ay0hat).reshape((b, c, h, w))
-                        op_result = At_Ax
-
-                    elif 'default_reshaped_x' in exp_name:
-                        Ay0hat = operator.A(y_i_img_0hat.reshape(y_i_img_0hat.size(0), -1)).reshape((b, c, h, w))
-                        op_result = Ay0hat
-
-                    else: # default Ay0hat setting
-                        Ay0hat = operator.A(y_i_img_0hat).reshape((b, c, h, w))
-                        op_result = Ay0hat
-
-                    content_loss, style_loss = gram_model(op_result) 
-                    gram_loss = reg_content * content_loss + reg_style * style_loss
-
-                    if 'norm' in exp_name:
-                        norm = th.linalg.norm(gram_loss)
-                        norm_grad_G = norm
-                    elif 'grad' in exp_name:
-                        norm = th.linalg.norm(gram_loss)
-
-                        if 'grad_y_prev' in exp_name:
-                            norm_grad_G = th.autograd.grad(outputs=norm, inputs=y_prev)[0]
-                        elif 'grad_y0hat' in exp_name:
-                            norm_grad_G = th.autograd.grad(outputs=norm, inputs=y_i_img_0hat)[0]
-                    else:
-                        norm_grad_G = gram_loss
-
-                # print(f"gram_score {norm_grad_G}")
-
-            ########### [Gram Matrix] ##############
-            if ('BefvggGramB' in exp_name) and (i > 0):
-                y_i_img_t = y_i_img_t - norm_grad_G * reg_scale_cond
-
-            ########### [Conditioning] ###########
             if 'condB' in exp_name:
-                y_i_new_img_t, distance = measurement_cond_fn(x_t=y_i_img_t,
-                                                              measurement=y0_measurement, # y0
-                                                              noisy_measurement=None, # measurement y0에 forward
-                                                              x_prev=y_prev,
-                                                              x_0_hat=y_i_img_0hat,
-                                                              reg_scale=reg_scale_cond)
-            elif 'no_gradB' in exp_name:
-                Ay0hat = operator.A(y_i_img_0hat) # H * y_0_hat    
-                Ay0hat = Ay0hat.reshape((b, c, h, w))
-
-                y_minus_Ay0hat = y0_measurement - Ay0hat # y - H*y_0_hat
-
-                H_t_mul_diff = operator.At(y_minus_Ay0hat) # H^T * (y - H*y_0hat)
-                H_t_mul_diff = H_t_mul_diff.reshape((b, c, h, w))
+                L_dps = y0_measurement - Ax0hat
                 
-                d_scale = self.sqrt_alphas_cumprod[int(self._scale_timesteps(i))]
-                
-                if 'div' in exp_name:
-                    y_i_new_img_t = y_i_img_t - 2 * H_t_mul_diff * reg_scale_cond * (1.0 / d_scale)
-                else:
-                    y_i_new_img_t = y_i_img_t - 2 * H_t_mul_diff * reg_scale_cond * d_scale
+            L_total = L_dps * reg_dps + L_content * reg_content + L_style * reg_style
             
-            else:
-                y_i_new_img_t = y_i_img_t
+            norm = th.linalg.norm(L_total)
+            norm_grad = th.autograd.grad(outputs=norm, inputs=x_prev)[0]
             
-            ########### [Gram Matrix] ##############
-            if ('AftvggGramB' in exp_name) and (i > 0):
-                y_i_new_img_t = y_i_new_img_t - norm_grad_G * reg_scale_cond
+            x_i_new_img_t = x_i_img_t - norm_grad * reg_scale_cond
+            
+            x_prev = x_i_new_img_t.detach_()
+            xi["sample"] = x_prev
+            yield xi
 
-            y_prev = y_i_new_img_t.detach_()
-            yi["sample"] = y_prev
-            yield yi
-            
-            loss_blur = get_loss(ori_cleanGT, y_i_img_0hat)
+            loss_blur = get_loss(ori_cleanGT, x_i_img_0hat)
 
             psnr, ssim = 0.0, 0.0
             for idx in range(ori_cleanGT.shape[0]):
-                restored = th.clamp(y_i_img_0hat[idx], -1., 1.).cpu().detach().numpy()
+                restored = th.clamp(x_i_img_0hat[idx], -1., 1.).cpu().detach().numpy()
                 target = th.clamp(ori_cleanGT[idx], -1., 1.).cpu().detach().numpy()
                 ps = psnr_loss(restored, target)
                 ss = ssim_loss(restored, target, data_range=2.0, multichannel=True, channel_axis=0)
@@ -783,14 +652,11 @@ class GaussianDiffusion:
             if use_wandb:
                 wandb_log = {'dec_blur_LPIPS': loss_blur['lpips'], 'dec_blur_L2': loss_blur['l2'], \
                              'time_scale': time_scale, 'dec_psnr_x0hat': psnr, 'dec_ssim_x0hat': ssim, \
-                            'norm_grad_G': norm_grad_G.mean()}
+                            'norm_grad': norm_grad.mean()}
                 wandb.log(wandb_log)
             if i % 100 == 0:
-                if 'no_gradB' in exp_name:
-                    vtils.save_image(Ay0hat, f'{directory}nogradB_Ay0hat{i}.png', range=(-1,1), normalize=True)
-                    vtils.save_image(H_t_mul_diff, f'{directory}nogradB_H_t_mul_diff{i}.png', range=(-1,1), normalize=True)
-                vtils.save_image(y_i_img_0hat, f'{directory}_x_0_hat{i}.png', range=(-1,1), normalize=True)
-                vtils.save_image(y_i_new_img_t, f'{directory}_x_t{i}.png', range=(-1,1), normalize=True)
+                vtils.save_image(x_i_img_0hat, f'{directory}_x_0_hat{i}.png', range=(-1,1), normalize=True)
+                vtils.save_image(x_i_new_img_t, f'{directory}_x_t{i}.png', range=(-1,1), normalize=True)
             
             if debug_mode:
                 break
@@ -973,7 +839,6 @@ class GaussianDiffusion:
             elif (exp_name is not None) and ("reversed" in exp_name):
                 time_idx = self.num_timesteps - i - 1
                 time_scale = th.from_numpy(self.sqrt_alphas_cumprod).to(device)[int(self._scale_timesteps(time_idx))].float()
-                time_scale *= reg_scale
             else:
                 time_scale = 1.0            
             print("time_scale %.4f" %(time_scale))
@@ -1043,7 +908,7 @@ class GaussianDiffusion:
             if use_wandb:
                 wandb_log = {'dec_blur_LPIPS': loss_blur['lpips'], 'dec_blur_L2': loss_blur['l2'], \
                              'time_scale': time_scale, 'dec_psnr_x0hat': psnr, 'dec_ssim_x0hat': ssim, \
-                            'norm_grad_G': norm_grad_G.mean()}
+                            'norm_grad': norm_grad.mean()}
                 wandb.log(wandb_log)
             if i % 100 == 0:
                 vtils.save_image(x_i_img_0hat, f'{directory}_x_0_hat{i}.png', range=(-1,1), normalize=True)

@@ -81,7 +81,7 @@ def main():
         lay_con = '_'.join(args.layer_content)
         args.log_suffix = f'{args.sub_directory}/laySty{lay_sty}_layCon{lay_con}/regDPS{args.reg_dps}regSty{args.reg_style}_regCon{args.reg_content}'
     else:
-        args.log_suffix = args.sub_directory 
+        args.log_suffix = f'{args.sub_directory}/regDPS{args.reg_dps}'
 
     # set save directory
     if args.run:
@@ -240,6 +240,7 @@ def main():
         
         if 'Gram' in args.exp_name:
             if 'cleanGT' in args.exp_name:
+                logger.log(f'! ! ! Clean GT TEST ! ! !')
                 gram_model = GramModel(cnn=vgg_cnn, style_img=ref_img, content_img=ref_img, content_layers=args.layer_content, style_layers=args.layer_style)
             else:
                 gram_model = GramModel(cnn=vgg_cnn, style_img=y_n, content_img=y_n, content_layers=args.layer_content, style_layers=args.layer_style)
@@ -265,6 +266,7 @@ def main():
                 directory=backward_dir,
                 original_image=ref_img,
                 debug_mode=args.debug_mode,
+                toyver=args.toyver,
                 norm=norm_dict,
                 measurement_cond_fn=measurement_cond_fn,
                 y0_measurement=y_measurement,
@@ -293,6 +295,7 @@ def main():
                     norm=norm_dict,
                     toyver=args.toyver,
                     measurement_cond_fn=measurement_cond_fn,
+                    y0_measurement=y_measurement,
                     gram_model=gram_model,
                     exp_name=args.exp_name,
                 )
@@ -351,8 +354,10 @@ def main():
         
         if args.run:
             dir_list = args.log_suffix.split('/')
-            recon_name = f'{dir_list[0]}{dir_list[1]}'
-            img_path = os.path.join(args.global_result_path, f'{recon_name}.png')
+            total_path = os.path.join(args.global_result_path,'_'.join(dir_list[:2]))
+            mkdir(total_path)
+            recon_name = '_'.join(dir_list[2:])
+            img_path = os.path.join(total_path, f'{recon_name}.png')
             plt.imsave(img_path, clear_color(sample_restored))
             
             caption1 = 'psnr %.4f'% (psnr)
@@ -361,11 +366,8 @@ def main():
             add_caption_to_image(img_path, caption1, caption2, font_path='/home/sojin/NaverNanumSquare/NanumFontSetup_TTF_SQUARE/NanumSquareB.ttf')
 
             with open(os.path.join(args.global_result_path,'total_results.txt'),'a') as f:
-                results = f'{recon_name}\n' + "[PSNR]: %.4f, [SSIM]: %.4f, [L2 loss]: %.4f, [LPIPS loss]: %.4f"% (psnr, ssim, l2_loss, lpips_loss) + '\n\n'
-                f.write(results)
-                
-            with open(os.path.join(args.sub_result_path,'sub_results.txt'),'a') as f:
-                results = f'{recon_name}\n' + "[PSNR]: %.4f, [SSIM]: %.4f, [L2 loss]: %.4f, [LPIPS loss]: %.4f"% (psnr, ssim, l2_loss, lpips_loss) + '\n\n'
+                save_name = '_'.join(dir_list[1:])
+                results = f'{save_name}\n' + "[PSNR]: %.4f, [SSIM]: %.4f, [L2 loss]: %.4f, [LPIPS loss]: %.4f"% (psnr, ssim, l2_loss, lpips_loss) + '\n\n'
                 f.write(results)
 
         if args.debug_mode and i ==0: return
@@ -388,8 +390,8 @@ def create_argparser():
     parser.add_argument('--gpu', type=str, default='6')
     parser.add_argument('--task_config', type=str, default='configs/noise_0.05/gaussian_deblur_config.yaml')
 
-    parser.add_argument('--exp_name', type=str, default='None')
-    parser.add_argument('--log_dir', type=str, default='./results_toy/0801ddebug')
+    parser.add_argument('--exp_name', type=str, default='GramB')
+    parser.add_argument('--log_dir', type=str, default='./results_toy/0821_GramDebug')
     parser.add_argument('-log','--log_suffix', type=str) 
     parser.add_argument('--model_path', type=str, default='./models/ffhq_1k/ffhq_10m.pt')
     
@@ -400,16 +402,16 @@ def create_argparser():
     parser.add_argument('--run', action='store_true', default=False)
     parser.add_argument('--debug_mode', action='store_true', default=False)
     
-    parser.add_argument('--diffusion_steps', type=int, default=500)
+    parser.add_argument('--diffusion_steps', type=int, default=1000)
     parser.add_argument('--toyver', type=int, default=1)
 
-    parser.add_argument('--norm_loss', type=float, default=0.01) 
+    parser.add_argument('--norm_loss', type=float, default=0.1) 
     parser.add_argument('--reg_dps', type=float, default=1) 
     parser.add_argument('--reg_style', type=float, default=1000) 
-    parser.add_argument('--reg_content', type=float, default=1) 
+    parser.add_argument('--reg_content', type=float, default=100) 
     
-    parser.add_argument('--layer_style', type=list, default=['conv_1', 'conv_2', 'conv_3', 'conv_4', 'conv_5']) 
-    parser.add_argument('--layer_content', type=list, default=['conv_4']) 
+    parser.add_argument('--layer_style', type=str, nargs='+', default=['conv_1', 'conv_2', 'conv_3', 'conv_4', 'conv_5']) 
+    parser.add_argument('--layer_content', type=str, nargs='+', default=['conv_4']) 
 
     add_dict_to_argparser(parser, defaults)
     return parser

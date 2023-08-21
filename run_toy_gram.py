@@ -66,22 +66,23 @@ parser.add_argument('--toyver', type=int, default=1)
 parser.add_argument('--diffusion_steps', type=str2list, default=['1000'])
 
 # parser.add_argument('--norm_loss', type=str2list, default=["0.1", "1", "10"]) 
-# parser.add_argument('--norm_loss', type=str2list, default=["0.1"]) # gpu 0
-parser.add_argument('--norm_loss', type=str2list, default=["1"]) # gpu 1
-# parser.add_argument('--norm_loss', type=str2list, default=["10"]) # gpu 2
+parser.add_argument('--norm_loss', type=str2list, default=["1"]) 
 
-# parser.add_argument('--reg_dps', type=str2list, default=["0.01", "0.1", "1", "10"]) 
-parser.add_argument('--reg_dps', type=str2list, default=["1"]) 
+# parser.add_argument('--reg_dps', type=str2list, default=["0.001", "0.01", "0.1", "1", "10"]) 
+parser.add_argument('--reg_dps', type=str2list, default=["0"]) 
 
-parser.add_argument('--reg_style', type=str2list, default=["10000", "1000", "100", "1", "0.1","-10000", "-1000", "-100", "-1", "-0.1"])
+# parser.add_argument('--reg_style', type=str2list, default=["1000000", "100000", "10000", "1000", "100", "1", "0.1", "-1000000", "-100000", "-10000", "-1000", "-100", "-1", "-0.1"])
+# parser.add_argument('--reg_style', type=str2list, default=["1000000", "100000", "10000", "1000", "100"])
+# parser.add_argument('--reg_style', type=str2list, default=["1", "0.1", "-1000000", "-100000", "-10000"])
+parser.add_argument('--reg_style', type=str2list, default=["-1000", "-100", "-1", "-0.1"])
 
 # parser.add_argument('--reg_content', type=str2list, default=["10","100","1000","-10","-100","-1000"]) 
 parser.add_argument('--reg_content', type=str2list, default=["0"]) 
 
-parser.add_argument('--layer_num_style', type=int, default=1) 
-parser.add_argument('--layer_num_content', type=int, default=1)
+parser.add_argument('--layer_num_style', type=int, default=2) 
 parser.add_argument('--layer_list_style', type=list, default=['conv_1', 'conv_2', 'conv_3', 'conv_4', 'conv_5', 'conv_6', 'conv_7', 'conv_8', 'conv_9', 'conv_10', 'conv_11', 'conv_12', 'conv_13', 'conv_14', 'conv_15', 'conv_16']) 
-# parser.add_argument('--layer_list_content', type=list, default=['conv_1', 'conv_2', 'conv_3', 'conv_4', 'conv_5', 'conv_6', 'conv_7', 'conv_8', 'conv_9', 'conv_10', 'conv_11', 'conv_12', 'conv_13', 'conv_14', 'conv_15', 'conv_16']) 
+
+parser.add_argument('--layer_num_content', type=int, default=1)
 parser.add_argument('--layer_list_content', type=list, default=['conv_4'])
 
 args = parser.parse_args()
@@ -94,16 +95,17 @@ if args.ddpm:
 
 condF_list = ['None']
 
-# args.log_dir = f'./results_toy/0818_Gram_style_layers/normL0.1'
-args.log_dir = f'./results_toy/0818_Gram_style_layers/normL1'
-# args.log_dir = f'./results_toy/0818_Gram_style_layers/normL10'
+# args.log_dir = f'./results_toy/0821_onlyGramStyle_withCleanGT_layer1/ddpm/'
+args.log_dir = f'./results_toy/0821_onlyGramStyle_withCleanGT_layer2/ddpm/'
+
+
 
 # condB_list = ['condB']
-condB_list = ['GramB']
 # condB_list = ['condB_GramB']
-
 # condB_list = ['GramB', 'condB', 'condB_GramB']
 # time_list = ['time', 'None', 'reversed']
+
+condB_list = ['GramB_cleanGT']
 time_list = ['time']
 
 
@@ -162,13 +164,15 @@ for task_config in task_config_list:
                     if 'Gram' in exp_name:
                         for reg_style in args.reg_style:
                             for layer_s in layer_style:
+                                layers_sty = ' '.join(layer_s)
                                 for reg_content in args.reg_content:
                                     for layer_c in layer_content:
-                                        import pdb; pdb.set_trace()
+                                        layers_con = ' '.join(layer_c)
+
                                         if args.kakao:
-                                            script = f'python scripts/image_sample_nonblind_grammatrix.py --kakao {run_option} --reg_dps {reg_dps} --reg_style {reg_style} --reg_content {reg_content} --layer_style {layer_s} --layer_content {layer_c} --diffusion_steps {diffusion_steps} --toyver {args.toyver} --task_config {task_config} --exp_name {exp_name} --norm_loss {norm_loss} --log_dir /app/outputs --gpu 0'
+                                            script = f'python scripts/image_sample_nonblind_grammatrix.py --kakao {run_option} --reg_dps {reg_dps} --reg_style {reg_style} --reg_content {reg_content} --layer_style {layers_sty} --layer_content {layers_con} --diffusion_steps {diffusion_steps} --toyver {args.toyver} --task_config {task_config} --exp_name {exp_name} --norm_loss {norm_loss} --log_dir /app/outputs --gpu 0'
                                         else:
-                                            script = f'python scripts/image_sample_nonblind_grammatrix.py {run_option} --reg_dps {reg_dps} --reg_style {reg_style} --reg_content {reg_content} --layer_style {layer_s} --layer_content {layer_c} --diffusion_steps {diffusion_steps} --toyver {args.toyver} --task_config {task_config} --exp_name {exp_name} --norm_loss {norm_loss} --log_dir {args.log_dir} --gpu {gpus[0]}'
+                                            script = f'python scripts/image_sample_nonblind_grammatrix.py {run_option} --reg_dps {reg_dps} --reg_style {reg_style} --reg_content {reg_content} --layer_style {layers_sty} --layer_content {layers_con} --diffusion_steps {diffusion_steps} --toyver {args.toyver} --task_config {task_config} --exp_name {exp_name} --norm_loss {norm_loss} --log_dir {args.log_dir} --gpu {gpus[0]}'
 
                                         print(f"Start {cur_cnt}/{all_exp_cnt}")
                                         subprocess.call(script, shell=True)
