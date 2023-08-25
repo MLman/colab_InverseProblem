@@ -20,10 +20,6 @@ dist/
 # Other
 *.DS_Store
 *.png
-*.pt
 *.txt
 *.csv
 wandb/
-models
-
-results_toy
