@@ -523,8 +523,29 @@ class GaussianDiffusion:
             ):
                 final = sample
                 
-        # elif toyver == 2:
-        #     raise NotImplementedError
+        elif toyver == 2:
+            for sample in self.p_sample_loop_progressive_ver2(
+                    model,
+                    operator,
+                    shape,
+                    noise=noise,
+                    clip_denoised=clip_denoised,
+                    denoised_fn=denoised_fn,
+                    cond_fn=cond_fn,
+                    model_kwargs=model_kwargs,
+                    device=device,
+                    progress=progress,
+                    original_image=original_image,
+                    use_wandb=use_wandb,
+                    directory=directory,
+                    debug_mode=debug_mode,
+                    norm=norm,
+                    measurement_cond_fn=measurement_cond_fn,
+                    y0_measurement=y0_measurement,
+                    gram_model=gram_model,
+                    exp_name=exp_name,
+            ):
+                final = sample
             
         return final["sample"]
 
@@ -630,6 +651,149 @@ class GaussianDiffusion:
             norm_grad = th.autograd.grad(outputs=norm, inputs=x_prev)[0]
             
             x_i_new_img_t = x_i_img_t - norm_grad * reg_scale_cond
+            
+            x_prev = x_i_new_img_t.detach_()
+            xi["sample"] = x_prev
+            yield xi
+
+            loss_blur = get_loss(ori_cleanGT, x_i_img_0hat)
+
+            psnr, ssim = 0.0, 0.0
+            for idx in range(ori_cleanGT.shape[0]):
+                restored = th.clamp(x_i_img_0hat[idx], -1., 1.).cpu().detach().numpy()
+                target = th.clamp(ori_cleanGT[idx], -1., 1.).cpu().detach().numpy()
+                ps = psnr_loss(restored, target)
+                ss = ssim_loss(restored, target, data_range=2.0, multichannel=True, channel_axis=0)
+                psnr += ps
+                ssim += ss
+                print(f"[PSNR]: %.4f, [SSIM]: %.4f"% (ps, ss)+'\n')
+            psnr /= ori_cleanGT.shape[0]
+            ssim /=ori_cleanGT.shape[0]
+
+            if use_wandb:
+                wandb_log = {'dec_blur_LPIPS': loss_blur['lpips'], 'dec_blur_L2': loss_blur['l2'], \
+                             'time_scale': time_scale, 'dec_psnr_x0hat': psnr, 'dec_ssim_x0hat': ssim, \
+                            'norm_grad': norm_grad.mean()}
+                wandb.log(wandb_log)
+            if i % 100 == 0:
+                vtils.save_image(x_i_img_0hat, f'{directory}_x_0_hat{i}.png', range=(-1,1), normalize=True)
+                vtils.save_image(x_i_new_img_t, f'{directory}_x_t{i}.png', range=(-1,1), normalize=True)
+            
+            if debug_mode:
+                break
+
+    def p_sample_loop_progressive_ver2(
+            self,
+            model,
+            operator,
+            shape,
+            noise=None,
+            clip_denoised=True,
+            denoised_fn=None,
+            cond_fn=None,
+            model_kwargs=None,
+            device=None,
+            progress=False,
+            original_image=None,
+            use_wandb=False,
+            directory=None,
+            debug_mode=False,
+            norm=None,
+            measurement_cond_fn=None,
+            y0_measurement=None,
+            gram_model=None,
+            exp_name=None,
+    ):
+        """
+        Generate samples from the model and yield intermediate samples from
+        each timestep of diffusion.
+
+        Arguments are the same as p_sample_loop().
+        Returns a generator over dicts, where each dict is the return value of
+        p_sample().
+        """
+        if device is None:
+            device = next(model.parameters()).device
+        assert isinstance(shape, (tuple, list))
+        if noise is not None:
+            x_prev = noise
+            ori_cleanGT = original_image
+        else:
+            x_prev = th.randn(*shape, device=device)
+            
+        indices = list(range(self.num_timesteps))[::-1]
+
+        if operator.__class__.__name__ == 'SRConv':
+            b, c, h, w = shape[0], shape[1], shape[2]//operator.ratio, shape[3]//operator.ratio
+        else:
+            b, c, h, w = shape[0], shape[1], shape[2], shape[3]
+
+        norm_loss = norm['loss']
+        reg_dps = norm['reg_dps']
+        reg_style = norm['reg_style']
+        reg_content = norm['reg_content']
+        
+        if progress:
+            # Lazy import so that we don't depend on tqdm.
+            from tqdm.auto import tqdm
+
+            indices = tqdm(indices)
+
+        for i in indices:
+            t = th.tensor([i] * shape[0], device=device)
+            # Remove with th.no_grad():
+            
+            x_prev = x_prev.requires_grad_()
+            
+            if (exp_name is not None) and ("time" in exp_name): 
+                time_scale = th.from_numpy(self.sqrt_alphas_cumprod).to(device)[int(self._scale_timesteps(i))].float()
+            elif (exp_name is not None) and ("reversed" in exp_name):
+                time_idx = self.num_timesteps - i - 1
+                time_scale = th.from_numpy(self.sqrt_alphas_cumprod).to(device)[int(self._scale_timesteps(time_idx))].float()
+            else:
+                time_scale = 1.0            
+            print("time_scale %.4f" %(time_scale))
+                
+            reg_scale_cond = time_scale * norm_loss
+            
+            xi = self.p_sample(
+                model,
+                x_prev,
+                t,
+                clip_denoised=clip_denoised,
+                denoised_fn=denoised_fn,
+                cond_fn=cond_fn,
+                model_kwargs=model_kwargs,
+            )
+            x_i_img_t = xi["sample"]
+            x_i_img_0hat = xi["pred_xstart"]
+            
+            Ax0hat = operator.A(x_i_img_0hat).reshape((b, c, h, w))
+
+            L_content, L_style, L_dps = 0.0, 0.0, 0.0
+
+            if 'GramB' in exp_name:
+                L_content, L_style = gram_model(Ax0hat) 
+
+                L_content *= reg_content
+                L_style *= reg_style
+
+            if 'condB' in exp_name:
+                L_dps = y0_measurement - Ax0hat
+                L_dps *= reg_dps
+            
+            if 'schedule_dps' in exp_name:
+                L_total = (L_dps * reg_scale_cond) + L_content + L_style
+            elif 'schedule_gram' in exp_name:
+                L_total = L_dps + (L_content + L_style) * reg_scale_cond
+            else: # None, time, reversed
+                L_total = (L_dps + L_content + L_style) * reg_scale_cond
+
+
+            norm = th.linalg.norm(L_total)
+            norm_grad = th.autograd.grad(outputs=norm, inputs=x_prev)[0]
+            
+            x_i_new_img_t = x_i_img_t - norm_grad
             
             x_prev = x_i_new_img_t.detach_()
             xi["sample"] = x_prev
@@ -768,7 +932,7 @@ class GaussianDiffusion:
                 final = sample
             final_blur = final["sample"]
 
-        elif toyver == 2:        
+        else:        
             raise NotImplementedError
 
         return final_blur
@@ -809,9 +973,10 @@ class GaussianDiffusion:
             x_prev = noise
             ori_cleanGT = original_image
         else:
-            # img = th.randn(*shape, device=device)
-            assert NotImplementedError
+            x_prev = th.randn(*shape, device=device)
         
+        indices = list(range(self.num_timesteps))[::-1]
+
         if operator.__class__.__name__ == 'SRConv':
             b, c, h, w = shape[0], shape[1], shape[2]//operator.ratio, shape[3]//operator.ratio
         else:
@@ -822,8 +987,6 @@ class GaussianDiffusion:
         reg_style = norm['reg_style']
         reg_content = norm['reg_content']
 
-        indices = list(range(self.num_timesteps))[::-1]
-
         if progress:
             # Lazy import so that we don't depend on tqdm.
             from tqdm.auto import tqdm
@@ -832,8 +995,9 @@ class GaussianDiffusion:
 
         for i in indices:
             t = th.tensor([i] * shape[0], device=device)
+
             x_prev = x_prev.requires_grad_()
-     
+            
             if (exp_name is not None) and ("time" in exp_name): 
                 time_scale = th.from_numpy(self.sqrt_alphas_cumprod).to(device)[int(self._scale_timesteps(i))].float()
             elif (exp_name is not None) and ("reversed" in exp_name):
@@ -870,18 +1034,6 @@ class GaussianDiffusion:
                 
             L_total = L_dps * reg_dps + L_content * reg_content + L_style * reg_style
 
-            # elif 'no_gradB' in exp_name:
-            #     y_minus_Ax0hat = y0_measurement - Ax0hat # y - H*y_0_hat
-            #     H_t_mul_diff = operator.At(y_minus_Ax0hat) # H^T * (y - H*y_0hat)
-            #     H_t_mul_diff = H_t_mul_diff.reshape((b, c, h, w))
-            #     d_scale = self.sqrt_alphas_cumprod[int(self._scale_timesteps(i))]
-
-            #     if 'div' in exp_name:
-            #         x_i_new_img_t = x_i_img_t - 2 * H_t_mul_diff * reg_scale_cond * (1.0 / d_scale)
-            #     else:
-            #         x_i_new_img_t = x_i_img_t - 2 * H_t_mul_diff * reg_scale_cond * d_scale
-            
-
             norm = th.linalg.norm(L_total)
             norm_grad = th.autograd.grad(outputs=norm, inputs=x_prev)[0]
 
@@ -908,7 +1060,7 @@ class GaussianDiffusion:
             if use_wandb:
                 wandb_log = {'dec_blur_LPIPS': loss_blur['lpips'], 'dec_blur_L2': loss_blur['l2'], \
                              'time_scale': time_scale, 'dec_psnr_x0hat': psnr, 'dec_ssim_x0hat': ssim, \
-                            'norm_grad': norm_grad.mean()}
+                             'norm_grad': norm_grad.mean()}
                 wandb.log(wandb_log)
             if i % 100 == 0:
                 vtils.save_image(x_i_img_0hat, f'{directory}_x_0_hat{i}.png', range=(-1,1), normalize=True)
@@ -916,198 +1068,6 @@ class GaussianDiffusion:
             
             if debug_mode:
                 break
-
-    def ddim_sample_loop_progressive_ver2(
-            self,
-            model,
-            operator,
-            shape,
-            noise=None,
-            clip_denoised=True,
-            denoised_fn=None,
-            cond_fn=None,
-            model_kwargs=None,
-            device=None,
-            progress=False,
-            eta=0.0,
-            original_image=None,
-            use_wandb=False,
-            directory=None,
-            debug_mode=False,
-            norm=None,
-            measurement_cond_fn=None,
-            y0_measurement=None,
-            gram_model=None,
-            exp_name=None,
-    ):
-        """
-        Use DDIM to sample from the model and yield intermediate samples from
-        each timestep of DDIM.
-
-        Same usage as p_sample_loop_progressive().
-        """
-        if device is None:
-            device = next(model.parameters()).device
-        assert isinstance(shape, (tuple, list))
-        if noise is not None:
-            x_prev = noise
-            ori_cleanGT = original_image
-        else:
-            # img = th.randn(*shape, device=device)
-            assert NotImplementedError
-        
-        b, c, h, w = shape[0], shape[1], shape[2], shape[3]
-
-        norm_loss = norm['loss']
-        reg_scale = norm['reg_scale']
-        early_stop_step = norm['early_stop']
-        reg_content = norm['reg_content']
-        reg_style = norm['reg_style']
-
-        if 'early_stop' in exp_name:
-            indices = list(range(early_stop_step))[::-1]
-        else:
-            indices = list(range(self.num_timesteps))[::-1]
-
-        if progress:
-            # Lazy import so that we don't depend on tqdm.
-            from tqdm.auto import tqdm
-
-            indices = tqdm(indices)
-
-        scale_type = make_scale_dict(exp_name)
-
-        for i in indices:
-            t = th.tensor([i] * shape[0], device=device)
-            x_prev = x_prev.requires_grad_()
-     
-            # Get Each Type of Scaling value
-            scale_dict = {}
-            scale_dict['time'] = th.from_numpy(self.sqrt_alphas_cumprod).to(device)[int(self._scale_timesteps(i))].float()
-            scale_dict['reversed'] = th.from_numpy(self.sqrt_alphas_cumprod).to(device)[int(self._scale_timesteps(self.num_timesteps - i - 1))].float()
-            scale_dict['None'] = 1.0
-
-            if 'early_stop' in exp_name:
-                m1 = early_stop_step
-            else:
-                m1 = self.num_timesteps // 4
-            m2 = self.num_timesteps - m1
-            if i < m1:
-                time_exp = np.exp((i-m1)*reg_scale)
-            elif i < m2:
-                time_exp = 1.0
-            else:
-                time_exp = np.exp((m2-i)*reg_scale)
-            scale_dict['exp'] = time_exp
-
-            content_scale, style_scale = get_scale(scale_type, scale_dict, norm_loss)
-
-            yi = self.ddim_sample(
-                model,
-                x_prev,
-                t,
-                clip_denoised=clip_denoised,
-                denoised_fn=denoised_fn,
-                cond_fn=cond_fn,
-                model_kwargs=model_kwargs,
-                eta=eta,
-            )
-            x_i_img_t = yi["sample"]
-            x_i_img_0hat = yi["pred_xstart"]
-
-            if 'vggGramB' in exp_name:
-                if 'y0hatGram' in exp_name:
-                    Ay0hat = operator.A(x_i_img_0hat).reshape((b, c, h, w))
-         
-                    if 'content' in exp_name:
-                        content_loss, _ = gram_model(x_i_img_0hat) 
-                        _, style_loss = gram_model(Ay0hat) 
-                    elif 'style' in exp_name:
-                        _, style_loss = gram_model(x_i_img_0hat) 
-                        content_loss, _ = gram_model(Ay0hat) 
-                    
-                    L_content_scaled = content_loss * content_scale * reg_content
-                    L_style_scaled = style_loss * style_scale * reg_style
-                    
-                    if 'separate' in exp_name:
-                        norm_content = th.linalg.norm(L_content_scaled)
-                        norm_style = th.linalg.norm(L_style_scaled)
-
-                        if 'case1' in exp_name:
-                            norm_grad_C = th.autograd.grad(outputs=norm_content, inputs=x_prev)[0]
-                            norm_grad_S = th.autograd.grad(outputs=norm_style, inputs=x_i_img_0hat)[0]
-                        elif 'case2' in exp_name:
-                            norm_grad_C = th.autograd.grad(outputs=norm_content, inputs=x_i_img_0hat)[0]
-                            norm_grad_S = th.autograd.grad(outputs=norm_style, inputs=x_prev)[0]
-                        else:
-                            raise NotImplementedError
-                        norm_grad_G = norm_grad_C + norm_grad_S
-
-                    else:
-                        gram_loss = L_content_scaled + L_style_scaled
-
-                        norm = th.linalg.norm(gram_loss)
-
-                        if 'grad_x_prev' in exp_name:
-                            norm_grad_G = th.autograd.grad(outputs=norm, inputs=x_prev)[0]
-                        elif 'grad_x0hat' in exp_name:
-                            norm_grad_G = th.autograd.grad(outputs=norm, inputs=x_i_img_0hat)[0]
-                        else:
-                            raise NotImplementedError
-                else: 
-                    Ay0hat = operator.A(x_i_img_0hat).reshape((b, c, h, w))
-
-                    content_loss, style_loss = gram_model(Ay0hat) 
-
-                    L_content_scaled = content_loss * content_scale * reg_content
-                    L_style_scaled = style_loss * style_scale * reg_style
-                    gram_loss = L_content_scaled + L_style_scaled
-
-                    norm = th.linalg.norm(gram_loss)
-
-                    if 'grad_x_prev' in exp_name:
-                        norm_grad_G = th.autograd.grad(outputs=norm, inputs=x_prev)[0]
-                    elif 'grad_x0hat' in exp_name:
-                        norm_grad_G = th.autograd.grad(outputs=norm, inputs=x_i_img_0hat)[0]
-                    else:
-                        raise NotImplementedError 
-            else:
-                raise NotImplementedError # In toy2, only VGG Gram is implemented
-
-            ########### [Gram Matrix] ##############
-            if 'vggGramB' in exp_name:
-                y_i_new_img_t = x_i_img_t - norm_grad_G 
-
-            x_prev = y_i_new_img_t.detach_()
-            yi["sample"] = x_prev
-            yield yi
-            
-            loss_blur = get_loss(ori_cleanGT, x_i_img_0hat)
-
-            psnr, ssim = 0.0, 0.0
-            for idx in range(ori_cleanGT.shape[0]):
-                restored = th.clamp(x_i_img_0hat[idx], -1., 1.).cpu().detach().numpy()
-                target = th.clamp(ori_cleanGT[idx], -1., 1.).cpu().detach().numpy()
-                ps = psnr_loss(restored, target)
-                ss = ssim_loss(restored, target, data_range=2.0, multichannel=True, channel_axis=0)
-                psnr += ps
-                ssim += ss
-                print(f"[PSNR]: %.4f, [SSIM]: %.4f"% (ps, ss)+'\n')
-            psnr /= ori_cleanGT.shape[0]
-            ssim /=ori_cleanGT.shape[0]
-
-            if use_wandb:
-                wandb_log = {'dec_blur_LPIPS': loss_blur['lpips'], 'dec_blur_L2': loss_blur['l2'], \
-                             'dec_psnr_x0hat': psnr, 'dec_ssim_x0hat': ssim, \
-                            'norm_grad_G': norm_grad_G.mean()}
-                wandb.log(wandb_log)
-            if i % 100 == 0:
-                vtils.save_image(x_i_img_0hat, f'{directory}_x_0_hat{i}.png', range=(-1,1), normalize=True)
-                vtils.save_image(y_i_new_img_t, f'{directory}_x_t{i}.png', range=(-1,1), normalize=True)
-            
-            if debug_mode:
-                break
-
 
     def ddim_reverse_sample(
             self,
@@ -1172,10 +1132,9 @@ class GaussianDiffusion:
             debug_mode=False,
             norm=None,
             measurement_cond_fn=None,
+            y0_measurement=None,
             gram_model=None,
             exp_name=None,
-            fea_storer=None,
-            feature_layers=None,
     ):
         """
         XS: Encode image into latent using DDIM ODE.
@@ -1183,7 +1142,6 @@ class GaussianDiffusion:
         final = None
 
         if toyver == 1:
-            raise NotImplementedError
             for sample in self.ddim_reverse_sample_loop_progressive_ver1(
                     model,
                     image,
@@ -1201,17 +1159,16 @@ class GaussianDiffusion:
                     debug_mode=debug_mode,
                     norm=norm,
                     measurement_cond_fn=measurement_cond_fn,
+                    y0_measurement=y0_measurement,
                     gram_model=gram_model,
                     exp_name=exp_name,
             ):
                 final = sample
-            final_blur = final["sample"]
-            
-        elif toyver == 2:
+        else:
             raise NotImplementedError
             
 
-        return final_blur
+        return final["sample"]
 
     def ddim_reverse_sample_loop_progressive_ver1(
             self,
@@ -1231,6 +1188,7 @@ class GaussianDiffusion:
             debug_mode=False,
             norm=None,
             measurement_cond_fn=None,
+            y0_measurement=None,
             gram_model=None,
             exp_name=None,
     ):
@@ -1240,11 +1198,12 @@ class GaussianDiffusion:
         if device is None:
             device = next(model.parameters()).device
         
-        y_prev = image # y^(0)
-        y0_measurement = image.clone().detach() # y_0
-
-        ori_sharp = original_image # for PSNR, SSIM
+        x_prev = image 
+        ori_cleanGT = original_image # for PSNR, SSIM
         shape = image.shape
+
+        indices = list(range(self.num_timesteps))
+
         if operator.__class__.__name__ == 'SRConv':
             b, c, h, w = shape[0], shape[1], shape[2]//operator.ratio, shape[3]//operator.ratio
         else:
@@ -1255,8 +1214,6 @@ class GaussianDiffusion:
         reg_style = norm['reg_style']
         reg_content = norm['reg_content']
      
-        indices = list(range(self.num_timesteps))
-
         if progress:
             # Lazy import so that we don't depend on tqdm.
             from tqdm.auto import tqdm
@@ -1265,23 +1222,23 @@ class GaussianDiffusion:
         
         for i in indices:
             t = th.tensor([i] * shape[0], device=device)
-            y_prev = y_prev.requires_grad_()
+            
+            x_prev = x_prev.requires_grad_()
 
             if (exp_name is not None) and ("time" in exp_name): 
                 time_scale = th.from_numpy(self.sqrt_alphas_cumprod).to(device)[int(self._scale_timesteps(i))].float()
             elif (exp_name is not None) and ("reversed" in exp_name):
                 time_idx = self.num_timesteps - i - 1
                 time_scale = th.from_numpy(self.sqrt_alphas_cumprod).to(device)[int(self._scale_timesteps(time_idx))].float()
-                time_scale *= reg_scale
             else:
-                time_scale = 1.0
-            print(f"time_scale {time_scale}")
-            
+                time_scale = 1.0            
+            print("time_scale %.4f" %(time_scale))
+                
             reg_scale_cond = time_scale * norm_loss
 
-            yi = self.ddim_reverse_sample(
+            xi = self.ddim_reverse_sample(
                 model,
-                y_prev,
+                x_prev,
                 t,
                 clip_denoised=clip_denoised,
                 denoised_fn=denoised_fn,
@@ -1289,58 +1246,55 @@ class GaussianDiffusion:
                 model_kwargs=model_kwargs,
                 eta=eta,
             )
-            y_i_img_t = yi["sample"] 
-            y_i_img_0hat = yi["pred_xstart"] 
+            x_i_img_t = xi["sample"]
+            x_i_img_0hat = xi["pred_xstart"]
 
-            Ay0hat = operator.A(y_i_img_0hat).reshape((b, c, h, w))
+            Ax0hat = operator.A(x_i_img_0hat).reshape((b, c, h, w))
 
             L_content, L_style, L_dps = 0.0, 0.0, 0.0
 
-            if 'GramF' in exp_name:
-                L_content, L_style = gram_model(Ay0hat)
+            if 'GramB' in exp_name:
+                L_content, L_style = gram_model(Ax0hat) 
 
-            if 'condF' in exp_name:
+            if 'condB' in exp_name:
                 L_dps = y0_measurement - Ax0hat
-                L_total = L_dps * reg_dps + L_content * reg_content + L_style * reg_style
-            else:
-                raise NotImplementedError
                 
+            L_total = L_dps * reg_dps + L_content * reg_content + L_style * reg_style
                 
             norm = th.linalg.norm(L_total)
             norm_grad = th.autograd.grad(outputs=norm, inputs=x_prev)[0]
+            
+            x_i_new_img_t = x_i_img_t - norm_grad * reg_scale_cond
 
-            y_i_new_img_t = y_i_img_t - norm_grad * reg_scale_cond
-
- 
-            y_prev = y_i_new_img_t.detach_()
-            yi["sample"] = y_prev
-            yield yi
+            x_prev = x_i_new_img_t.detach_()
+            xi["sample"] = x_prev
+            yield xi
     
-            loss_before = get_loss(y_i_img_0hat, y0_measurement)
-            loss_after = get_loss(y_i_new_img_t, y0_measurement)
+            loss_before = get_loss(x_i_img_0hat, y0_measurement)
+            loss_after = get_loss(x_i_new_img_t, y0_measurement)
 
             psnr, ssim = 0.0, 0.0
-            for idx in range(ori_sharp.shape[0]):
-                restored = th.clamp(y_i_img_0hat[idx], -1., 1.).cpu().detach().numpy()
-                target = th.clamp(ori_sharp[idx], -1., 1.).cpu().detach().numpy()
+            for idx in range(ori_cleanGT.shape[0]):
+                restored = th.clamp(x_i_img_0hat[idx], -1., 1.).cpu().detach().numpy()
+                target = th.clamp(ori_cleanGT[idx], -1., 1.).cpu().detach().numpy()
                 ps = psnr_loss(restored, target)
                 ss = ssim_loss(restored, target, data_range=2.0, multichannel=True, channel_axis=0)
                 psnr += ps
                 ssim += ss
                 print(f"[PSNR]: %.4f, [SSIM]: %.4f"% (ps, ss)+'\n')
-            psnr /= ori_sharp.shape[0]
-            ssim /=ori_sharp.shape[0]
+            psnr /= ori_cleanGT.shape[0]
+            ssim /=ori_cleanGT.shape[0]
 
             if use_wandb:
                 wandb_log = {'enc_LPIPS_bef': loss_before['lpips'], 'enc_L2_bef': loss_before['l2'], \
                              'enc_LPIPS_aft': loss_after['lpips'], 'enc_L2_aft': loss_after['l2'], \
                              'time_scale': time_scale, 'enc_psnr_x0hat': psnr, 'enc_ssim_x0hat': ssim, \
-                             'norm_grad_G': norm_grad_G.mean()}
+                             'norm_grad': norm_grad.mean()}
                 wandb.log(wandb_log)
  
             if i % 100 == 0:
-                vtils.save_image(y_i_img_0hat, f'{directory}_new_x_0_hat{i}.png', range=(-1,1), normalize=True)
-                vtils.save_image(y_i_new_img_t, f'{directory}_x_t{i}.png', range=(-1,1), normalize=True)
+                vtils.save_image(x_i_img_0hat, f'{directory}_new_x_0_hat{i}.png', range=(-1,1), normalize=True)
+                vtils.save_image(x_i_new_img_t, f'{directory}_x_t{i}.png', range=(-1,1), normalize=True)
 
             if debug_mode:
                 break

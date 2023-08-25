@@ -75,7 +75,6 @@ def main():
         args.log_suffix = f'{args.log_suffix}_{args.exp_name}'
     
     args.sub_directory = f'{task_name}_toyver{args.toyver}/{args.exp_name}/time{args.diffusion_steps}normL{args.norm_loss}'
-    
     if "Gram" in args.exp_name:
         lay_sty = '_'.join(args.layer_style)
         lay_con = '_'.join(args.layer_content)
@@ -88,8 +87,8 @@ def main():
         args.global_result_path = os.path.join(args.log_dir, 'total_results')
         mkdir(args.global_result_path)
         
-        args.sub_result_path = os.path.join(args.sub_directory, 'sub_results')
-        mkdir(args.sub_result_path)
+        # args.sub_result_path = os.path.join(args.log_dir, args.sub_directory, 'sub_results')
+        # mkdir(args.sub_result_path)
 
     args.log_dir = os.path.join(args.log_dir, args.log_suffix)
     args.save_dir = args.log_dir
