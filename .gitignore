@@ -19,7 +19,7 @@ dist/
 
 # Other
 *.DS_Store
-*.png
+*.pt
 *.txt
 *.csv
 wandb/
