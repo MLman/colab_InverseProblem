@@ -663,10 +663,12 @@ class GaussianDiffusion:
                 restored = th.clamp(x_i_img_0hat[idx], -1., 1.).cpu().detach().numpy()
                 target = th.clamp(ori_cleanGT[idx], -1., 1.).cpu().detach().numpy()
                 ps = psnr_loss(restored, target)
-                ss = ssim_loss(restored, target, data_range=2.0, multichannel=True, channel_axis=0)
+                # ss = ssim_loss(restored, target, data_range=2.0, multichannel=True, channel_axis=0)
                 psnr += ps
+                ss = 0
                 ssim += ss
-                print(f"[PSNR]: %.4f, [SSIM]: %.4f"% (ps, ss)+'\n')
+                # print(f"[PSNR]: %.4f, [SSIM]: %.4f"% (ps, ss)+'\n')
+                print(f"[PSNR]: %.4f"% (ps)+'\n')
             psnr /= ori_cleanGT.shape[0]
             ssim /=ori_cleanGT.shape[0]
 
@@ -806,10 +808,12 @@ class GaussianDiffusion:
                 restored = th.clamp(x_i_img_0hat[idx], -1., 1.).cpu().detach().numpy()
                 target = th.clamp(ori_cleanGT[idx], -1., 1.).cpu().detach().numpy()
                 ps = psnr_loss(restored, target)
-                ss = ssim_loss(restored, target, data_range=2.0, multichannel=True, channel_axis=0)
+                # ss = ssim_loss(restored, target, data_range=2.0, multichannel=True, channel_axis=0)
                 psnr += ps
+                ss = 0
                 ssim += ss
-                print(f"[PSNR]: %.4f, [SSIM]: %.4f"% (ps, ss)+'\n')
+                # print(f"[PSNR]: %.4f, [SSIM]: %.4f"% (ps, ss)+'\n')
+                print(f"[PSNR]: %.4f"% (ps)+'\n')
             psnr /= ori_cleanGT.shape[0]
             ssim /=ori_cleanGT.shape[0]
 
@@ -1050,10 +1054,12 @@ class GaussianDiffusion:
                 restored = th.clamp(x_i_img_0hat[idx], -1., 1.).cpu().detach().numpy()
                 target = th.clamp(ori_cleanGT[idx], -1., 1.).cpu().detach().numpy()
                 ps = psnr_loss(restored, target)
-                ss = ssim_loss(restored, target, data_range=2.0, multichannel=True, channel_axis=0)
+                # ss = ssim_loss(restored, target, data_range=2.0, multichannel=True, channel_axis=0)
                 psnr += ps
+                ss = 0
                 ssim += ss
-                print(f"[PSNR]: %.4f, [SSIM]: %.4f"% (ps, ss)+'\n')
+                # print(f"[PSNR]: %.4f, [SSIM]: %.4f"% (ps, ss)+'\n')
+                print(f"[PSNR]: %.4f"% (ps)+'\n')
             psnr /= ori_cleanGT.shape[0]
             ssim /=ori_cleanGT.shape[0]
 
@@ -1278,10 +1284,12 @@ class GaussianDiffusion:
                 restored = th.clamp(x_i_img_0hat[idx], -1., 1.).cpu().detach().numpy()
                 target = th.clamp(ori_cleanGT[idx], -1., 1.).cpu().detach().numpy()
                 ps = psnr_loss(restored, target)
-                ss = ssim_loss(restored, target, data_range=2.0, multichannel=True, channel_axis=0)
+                # ss = ssim_loss(restored, target, data_range=2.0, multichannel=True, channel_axis=0)
                 psnr += ps
+                ss = 0
                 ssim += ss
-                print(f"[PSNR]: %.4f, [SSIM]: %.4f"% (ps, ss)+'\n')
+                # print(f"[PSNR]: %.4f, [SSIM]: %.4f"% (ps, ss)+'\n')
+                print(f"[PSNR]: %.4f"% (ps)+'\n')
             psnr /= ori_cleanGT.shape[0]
             ssim /=ori_cleanGT.shape[0]
 

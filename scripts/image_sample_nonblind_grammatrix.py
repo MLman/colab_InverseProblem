@@ -335,10 +335,12 @@ def main():
             restored = th.clamp(sample_restored[idx], -1., 1.).cpu().detach().numpy()
             target = th.clamp(ref_img[idx], -1., 1.).cpu().detach().numpy()
             ps = psnr_loss(restored, target)
-            ss = ssim_loss(restored, target, data_range=2.0, multichannel=True, channel_axis=0)
+            # ss = ssim_loss(restored, target, data_range=2.0, multichannel=True, channel_axis=0)
             psnr += ps
+            ss = 0
             ssim += ss
-            result = f"[PSNR]: %.4f, [SSIM]: %.4f"% (ps, ss)+'\n'
+            # result = f"[PSNR]: %.4f, [SSIM]: %.4f"% (ps, ss)+'\n'
+            result = f"[PSNR]: %.4f"% (ps)+'\n'
             print(result)
             logger.log(result)            
         psnr /= args.batch_size
@@ -348,7 +350,8 @@ def main():
         if args.use_wandb:
             wandb.log(loss_dict)
 
-        results = f'{i}th iter --->' + "[PSNR]: %.4f, [SSIM]: %.4f, [L2 loss]: %.4f, [LPIPS loss]: %.4f"% (psnr, ssim, l2_loss, lpips_loss) + '\n'
+        # results = f'{i}th iter --->' + "[PSNR]: %.4f, [SSIM]: %.4f, [L2 loss]: %.4f, [LPIPS loss]: %.4f"% (psnr, ssim, l2_loss, lpips_loss) + '\n'
+        results = f'{i}th iter --->' + "[PSNR]: %.4f,  [L2 loss]: %.4f, [LPIPS loss]: %.4f"% (psnr, l2_loss, lpips_loss) + '\n'
         logger.log(results)
         
         if args.run:
@@ -360,14 +363,22 @@ def main():
             plt.imsave(img_path, clear_color(sample_restored))
             
             caption1 = 'psnr %.4f'% (psnr)
-            caption2 = 'ssim %.4f'% (ssim)
-
-            add_caption_to_image(img_path, caption1, caption2, font_path='/home/sojin/NaverNanumSquare/NanumFontSetup_TTF_SQUARE/NanumSquareB.ttf')
+            # caption2 = 'ssim %.4f'% (ssim)
+            caption2 = ''
+            add_caption_to_image(img_path, caption1, caption2, font_path='util/NanumSquareB.ttf')
 
             with open(os.path.join(args.global_result_path,'total_results.txt'),'a') as f:
                 save_name = '_'.join(dir_list[1:])
-                results = f'{save_name}\n' + "[PSNR]: %.4f, [SSIM]: %.4f, [L2 loss]: %.4f, [LPIPS loss]: %.4f"% (psnr, ssim, l2_loss, lpips_loss) + '\n\n'
+                # results = f'{save_name}\n' + "[PSNR]: %.4f, [SSIM]: %.4f, [L2 loss]: %.4f, [LPIPS loss]: %.4f"% (psnr, ssim, l2_loss, lpips_loss) + '\n\n'
+                results = f'{save_name}\n' + "[PSNR]: %.4f, [L2 loss]: %.4f, [LPIPS loss]: %.4f"% (psnr, l2_loss, lpips_loss) + '\n\n'
                 f.write(results)
+        else:
+            caption1 = 'psnr %.4f'% (psnr)
+            # caption2 = 'ssim %.4f'% (ssim)
+            caption2 = ''
+            
+            img_path = os.path.join(out_path, f'Recon{fname}')
+            add_caption_to_image(img_path, caption1, caption2, font_path='util/NanumSquareB.ttf')
 
         if args.debug_mode and i ==0: return
 

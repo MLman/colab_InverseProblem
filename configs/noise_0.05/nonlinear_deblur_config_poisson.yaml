@@ -5,7 +5,7 @@ conditioning:
 
 data:
   name: ffhq
-  root: /hub_data2/sojin/ffhq_1K/
+  root: images/ffhq_1K
 
 measurement:
   operator:
